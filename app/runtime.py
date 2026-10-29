@@ -27,9 +27,16 @@ async def analyze_isolated(path: Path, max_pages: int, lang: str,
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_s)
     except asyncio.TimeoutError:
-        process.kill()
+        if process.returncode is None:
+            process.kill()
         await process.communicate()
         return Result("REVIEW", "PDF xử lý quá thời gian cho phép.")
+    except asyncio.CancelledError:
+        # /stop must terminate CPU-heavy OCR, not just cancel the chat handler.
+        if process.returncode is None:
+            process.kill()
+        await process.communicate()
+        raise
     if process.returncode != 0 or len(stdout) > 32000:
         return Result("REVIEW", "Không xử lý được PDF an toàn.")
     try:
@@ -39,3 +46,43 @@ async def analyze_isolated(path: Path, max_pages: int, lang: str,
         return Result(**payload)
     except (ValueError, TypeError):
         return Result("REVIEW", "Dữ liệu xử lý không hợp lệ.")
+
+
+async def build_evidence_isolated(path: Path, result: Result, timeout_s: int = 15) -> list[str]:
+    """Generate optional proof JPEGs in a distinct killable subprocess.
+
+    The main PDF status has already been computed. Failed/slow image generation
+    cannot turn a valid result into REVIEW or strand the OCR worker.
+    """
+    if result.stamp_page is None:
+        return []
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "app.evidence_worker", str(path),
+        str(result.stamp_page), result.stamp_fingerprint or "-",
+        str(result.signer_page or 0),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        env={**os.environ, "OMP_THREAD_LIMIT": "1"},
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout_s)
+    except asyncio.TimeoutError:
+        if process.returncode is None:
+            process.kill()
+        await process.communicate()
+        return []
+    except asyncio.CancelledError:
+        if process.returncode is None:
+            process.kill()
+        await process.communicate()
+        raise
+    if process.returncode != 0 or len(stdout) > 1024:
+        return []
+    try:
+        names = json.loads(stdout.decode("utf-8"))
+        allowed = {"proof_seal.jpg", "proof_signer.jpg", "proof_header.jpg"}
+        if not isinstance(names, list):
+            return []
+        return [name for name in names if isinstance(name, str) and name in allowed]
+    except (ValueError, UnicodeError):
+        return []
