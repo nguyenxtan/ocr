@@ -42,7 +42,7 @@ def test_builds_exactly_three_small_crops(tmp_path):
     assert detector.call_args.kwargs["with_boxes"] is True
     for filename in written:
         data = (tmp_path / filename).read_bytes()
-        assert data.startswith(b"\\xff\\xd8".decode("unicode_escape").encode("latin1"))
+        assert data[:2] == bytes((0xFF, 0xD8))
         assert len(data) < 550_000
 
 
@@ -58,3 +58,16 @@ def test_rejects_export_to_arbitrary_directory(tmp_path):
     pdf.write_bytes(b"%PDF-dummy")
     with pytest.raises(ValueError):
         build_evidence(pdf, Result("PASS", "OK", stamp_page=1), other)
+
+
+def test_real_stamp_detection_returns_box_coordinates():
+    from app.analysis import detect_stamps
+    image = np.full((700, 700, 3), 255, dtype=np.uint8)
+    cv2.circle(image, (350, 350), 95, (190, 35, 35), 4)
+    cv2.circle(image, (350, 350), 75, (190, 35, 35), 3)
+    detected = detect_stamps(image, max_candidates=2, with_boxes=True)
+    assert detected
+    score, mask, (left, top, right, bottom) = detected[0]
+    assert score >= 0.68
+    assert left < 350 < right and top < 350 < bottom
+    assert mask.shape == (bottom - top, right - left)
