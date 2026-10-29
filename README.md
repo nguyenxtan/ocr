@@ -1,6 +1,6 @@
 # OCR PDF Verification Bot (POC)
 
-Bot Telegram **chỉ nhận PDF**, trả trạng thái **PASS / FAIL / REVIEW** trong tin nhắn Telegram HTML gọn, có chữ đậm và vị trí trang phát hiện dấu. Đây là bản thử nghiệm, chưa được nghiệm thu độ chính xác OCR trên nhiều mẫu.
+Bot Telegram **chỉ nhận PDF**, trả trạng thái **PASS / FAIL / REVIEW** trong tin nhắn Telegram HTML gọn, có chữ đậm và vị trí trang phát hiện dấu. Sau khi đối chiếu dấu, bot còn tìm **tên tại vị trí ký** để so với trường **Đại diện có thẩm quyền** nếu có. Đây là bản thử nghiệm, chưa được nghiệm thu độ chính xác OCR trên nhiều mẫu.
 
 ## Chạy bằng Docker
 
@@ -37,6 +37,14 @@ Yêu cầu: Docker Engine + Docker Compose v2, không cần GPU, n8n, database h
 5. Nếu MST trên dấu không đọc chắc, fallback tên doanh nghiệp. Với **tên ngắn**, các từ phân biệt phải khớp chính xác, tránh nhầm MINH/VINH; tên dài cho phép lỗi OCR nhỏ nếu có đủ từ khác xác nhận. Nếu nhiều tên công ty hoặc nhiều dấu mâu thuẫn: **REVIEW**.
 6. Không phát hiện vòng dấu: **FAIL**. Nếu chỉ thấy vùng nghi dấu hoặc có dấu nhưng không đủ dữ liệu (ví dụ công văn có dấu của cơ quan, không có trường tên doanh nghiệp để đối chiếu): **REVIEW**, kèm trang phát hiện.
 
+### Đối chiếu người ký (POC)
+
+- Trích **tên đại diện được khai báo** từ ô có nhãn như `Đại diện có thẩm quyền` hoặc `Người được ủy quyền`.
+- Đọc **tên in tại vị trí ký** trên các trang, tìm theo vùng tiêu đề ký (`Đại diện khách hàng`, `Giám đốc`, v.v.). Không lấy tên trong ô khai báo tự điền vào khu vực chữ ký.
+- Hai tên OCR rõ và trùng: `MATCH`. Rõ nhưng khác: `MISMATCH`. Nét chữ mờ hoặc chữ ký tay không đọc được: `UNREADABLE`. Không có tên đại diện khai báo: `NOT_DECLARED`.
+- Nếu đã có trường đại diện mà tên ký không đọc chắc: **REVIEW**; khác rõ: **FAIL**. Nếu không có trường đại diện, bot vẫn báo kết quả đối chiếu dấu riêng và thông tin người ký là **chưa đối chiếu**, không suy luận thẩm quyền pháp lý.
+- **Không xác minh** người ký có thẩm quyền ngoài chứng từ, không phân tích tính thật/giả của chữ ký tay hoặc con dấu.
+
 ### Mẫu phản hồi Telegram (gọn, có tỷ lệ khớp)
 
 Khi MST không đủ dữ liệu và tên doanh nghiệp khớp:
@@ -59,6 +67,16 @@ Nếu MST có trên chứng từ nhưng không đọc chắc được trên dấ
 
 Tỷ lệ 86% / 100% là kết quả tính trên các PDF mẫu ở lần thử này, **không phải số hardcode**. Công thức: số **từ đặc trưng** trong tên doanh nghiệp được OCR trên dấu và đối chiếu đạt / tổng số từ đặc trưng của tên trong chứng từ, nhân 100%. Đây là tỷ lệ khớp chữ OCR, **không phải xác suất OCR đúng, xác thực con dấu, hay chất lượng hồ sơ**.
 
+Phản hồi bổ sung một dòng người ký:
+
+```text
+✍️ Người ký: Khớp tên đại diện
+✍️ Người ký: Chưa đọc rõ để đối chiếu
+✍️ Người ký: Nguyen Sơn Hai · Chưa đối chiếu
+```
+
+Các dòng trên là ví dụ thay thế nhau theo từng trường hợp.
+
 Chỉ hiện `MST: Không khớp` khi có hai MST đọc đủ rõ, đúng cấu trúc nhưng khác nhau. Nếu thiếu MST trên chứng từ hoặc không đọc rõ trên dấu, phải thể hiện rõ thay vì suy đoán. Không tự cho PASS bằng tên khi MST đọc rõ nhưng mâu thuẫn.
 
 Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết quả. Nội bộ giữ `MST_MATCH` hoặc `NAME_FALLBACK`. PASS chỉ là **khớp thông tin dấu và chứng từ**, không kết luận giá trị pháp lý, không phân biệt dấu thật/giả. Chưa kiểm tra người ký/chức vụ hoặc xác thực chữ ký số nhúng; chữ ký số không được coi là dấu đỏ vật lý.
@@ -75,10 +93,10 @@ Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết 
 
 Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 
-Đã chạy **37 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
-- File scan có dấu: PASS bằng NAME_FALLBACK.
+Đã chạy **47 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
+- File scan Cypress có dấu: con dấu khớp, nhưng tên ký màu đỏ chưa OCR đủ rõ, nên khi bật kiểm tra người ký sẽ **REVIEW**. Tên được khai báo: QUAN TUNG ANH.
 - File PDF không dấu đỏ: FAIL.
-- File công văn TCIS, 2 trang: PASS bằng NAME_FALLBACK, dấu trang 2; trước đó REVIEW do chưa OCR đủ chữ ở giữa dấu.
+- File công văn TCIS, 2 trang: PASS bằng NAME_FALLBACK, dấu trang 2; trước đó REVIEW do chưa OCR đủ chữ ở giữa dấu. Đọc được tên ký Nguyễn Sơn Hải nhưng không có trường đại diện có thẩm quyền để so khớp.
 - PDF dạng công văn có tên công ty tại **góc trên trái**: đã trích xuất được tên từ đầu văn bản; nếu chữ trên dấu chưa đủ rõ, kết quả vẫn là REVIEW thay vì tự đoán PASS.
 - Ảnh chụp công văn 4 trang có dấu đỏ nâu ở trang 4: thuật toán mới nhận diện được dấu **trên ảnh chụp**; chưa có PDF gốc để kiểm tra toàn bộ luồng Telegram. Với chứng từ không có trường tên doanh nghiệp, kết quả đối chiếu sẽ là REVIEW, không phải PASS.
 
@@ -94,4 +112,4 @@ Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 
 ## Trạng thái
 
-POC giai đoạn 1: bot trả trạng thái, OCR/con dấu ở mức sơ bộ; chưa kết luận thẩm quyền và chữ ký số. Bước sau: benchmark nhiều PDF, tối ưu OCR dấu cong và người ký.
+POC giai đoạn 2: đã bổ sung so khớp tên ký in và tên đại diện khai báo; khi không chắc sẽ REVIEW. Bot **chưa xác minh thẩm quyền pháp lý** hoặc chữ ký số. Bước sau: benchmark nhiều PDF, tối ưu OCR dấu cong và người ký.
