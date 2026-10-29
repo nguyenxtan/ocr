@@ -29,6 +29,15 @@ Chỉ hỗ trợ tin nhắn riêng, không xử lý PDF trong nhóm Telegram. PU
 
 Không đưa token, PDF khách hàng, CMND hoặc giấy tờ nội bộ vào repo. Docker dùng container không đặc quyền, read-only, bộ nhớ 2 GB, CPU giới hạn. PDF được tải vào thư mục tạm rồi xóa sau lượt kiểm tra.
 
+## 1.1. Chống treo và trải nghiệm Telegram
+
+- Nhận một PDF: bot tạo **một tin nhắn trạng thái đang xử lý**, sau đó sửa chính tin nhắn đó thành PASS/FAIL/REVIEW và **luôn nêu lý do** nếu REVIEW.
+- Khi bot bận: các PDF tiếp theo được đưa vào **hàng đợi hữu hạn** thay vì trả lỗi sau 1 giây; giới hạn theo `MAX_QUEUED_PDFS` (mặc định 3), `QUEUE_WAIT_SEC` (mặc định 300 giây). Mỗi tài khoản chỉ được có một PDF đang chờ/xử lý.
+- Nhắn **`/stop`** hoặc **`/cancel`** để hủy PDF đang xử lý/chờ của mình. Tiến trình OCR được kết thúc, giải phóng lượt cho người khác. Lệnh không dừng toàn bộ bot.
+- Nút **🔍 Xem bằng chứng** nhận sự kiện `callback_query` độc lập với tin nhắn. Nếu Telegram không gửi được album, bot thử gửi một ảnh con dấu; nếu vẫn thất bại thì báo lỗi thay vì im lặng.
+- Tạo ảnh bằng chứng bằng tiến trình riêng tối đa `EVIDENCE_TIMEOUT_SEC` (mặc định 15 giây). Nếu lỗi hoặc quá thời gian, **kết quả OCR chính vẫn giữ nguyên**; nút chỉ xuất hiện khi ảnh JPEG thật đã tạo được.
+- Ảnh chỉ mở được bởi người gửi, có hiệu lực tối đa **10 phút**; khởi động lại Docker sẽ làm các nút ảnh cũ hết hiệu lực.
+
 ## 2. Quy tắc kiểm tra
 
 1. **Con dấu đỏ/nâu:** Tìm hình tròn hoặc hình elip bị méo do scan ở nhiều trang/vị trí, loại nhiễu chữ đỏ; không thấy dấu thì FAIL, nghi dấu thì REVIEW.
