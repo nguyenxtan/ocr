@@ -40,8 +40,8 @@ def test_worker_stdout_noise_does_not_change_verdict(monkeypatch, tmp_path):
     class FakeProcess:
         returncode = 0
         async def communicate(self):
-            return (b"warning: unrelated PDF library output\\n"
-                    b'OCR_RESULT_JSON:{"status":"FAIL","reason":"Khong thay dau"}\\n', b"")
+            return (b"warning: unrelated PDF library output\n"
+                    b'OCR_RESULT_JSON:{"status":"FAIL","reason":"Khong thay dau"}\n', b"")
         def kill(self): pass
 
     async def spawn(*args, **kwargs):
