@@ -11,10 +11,16 @@ from app.analysis import Result
 
 
 async def analyze_isolated(path: Path, max_pages: int, lang: str,
-                           timeout_s: int = 90) -> Result:
+                           timeout_s: int = 90,
+                           evidence_dir: Path | None = None) -> Result:
     """Terminate unresponsive parsers; never strand background OCR threads."""
+    arguments = [sys.executable, "-m", "app.worker", str(path), str(max_pages), lang]
+    if evidence_dir is not None:
+        if evidence_dir.resolve() != path.parent.resolve():
+            raise ValueError("Evidence directory must be the PDF temporary directory")
+        arguments.append(str(evidence_dir))
     process = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "app.worker", str(path), str(max_pages), lang,
+        *arguments,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         env={**os.environ, "OMP_THREAD_LIMIT": "1"},
     )
