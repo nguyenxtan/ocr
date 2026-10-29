@@ -67,7 +67,7 @@ def read_document_identity(
         page_text = page.get_text("text") or ""
         if len(page_text.strip()) < 60:
             rgb = render_page(page)
-            page_text = pytesseract.image_to_string(rgb, lang=lang, config="--psm 3")
+            page_text = pytesseract.image_to_string(rgb, lang=lang, config="--psm 3", timeout=12)
         company, page_mst = extract_fields(page_text)
         if page_mst and not mst:
             mst = page_mst
@@ -80,7 +80,7 @@ def read_document_identity(
             rgb = render_page(page)
         possibilities = []
         for region in header_regions(rgb):
-            lines = pytesseract.image_to_string(region, lang=lang, config="--psm 6")
+            lines = pytesseract.image_to_string(region, lang=lang, config="--psm 6", timeout=12)
             name = extract_letterhead_company(lines)
             if name:
                 possibilities.append(name)

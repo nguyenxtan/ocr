@@ -1,17 +1,11 @@
-# Telegram result contract
+# Telegram output contract (POC)
 
-Show only PASS/FAIL/REVIEW, seal page, match result, and MST status.
+Status labels: PASS, FAIL, REVIEW. Telegram body shows physical stamp page, company name OCR token coverage, tax-code status, and signer comparison. Embedded PDF signature status is separate from ink-seal presence.
 
-PASS_NAME example:
-
-```text
-✅ HỒ SƠ ĐẠT
-🔴 Dấu đỏ · Trang 2
-🏢 Tên doanh nghiệp: Khớp 86%
-🧾 MST: Chưa thấy trên chứng từ
-```
-
-`86%` is distinctive-name-token OCR coverage, not confidence and not a static setting.
-The display omits "Dự phòng" but backend still records `NAME_FALLBACK`.
-
-MST states: `MATCH` (matches); `MISMATCH` (confidently different); `UNREADABLE` (stamp unclear); `NO_DOC` (no labeled MST on PDF); `CONFLICT` (contradictory evidence). Do not mistake absent readings for mismatches.
+- Name matching percentage is **distinctive token coverage**, not confidence or authenticity.
+- No visible 'Fallback/Dự phòng' label; internal method remains `NAME_FALLBACK`.
+- `MST: Chưa thấy trên chứng từ` when no clearly labeled tax number was read.
+- `MST: Chưa đọc rõ trên dấu` when document MST exists but the stamp code is unreadable.
+- `MST: Không khớp` only when reliable, complete tax codes contradict.
+- `Người ký: Chưa đọc rõ` for low-confidence handwriting. No auto-PASS from the declared name.
+- Digital signing and physical ink seals are separate; a signed PDF can fail a physical-seal-required check.

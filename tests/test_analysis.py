@@ -39,25 +39,23 @@ def test_red_circular_stamp():
     assert crop is not None
 
 
+def test_short_reply():
+    assert Result("PASS", "Tên khớp", "NAME_FALLBACK").telegram_text() == "✅ PASS\nTên khớp"
+
+
 def test_faded_brown_red_seal():
-    """Low-saturation stamp like a scanned official seal must still be detected."""
     image = np.full((700, 700, 3), 255, np.uint8)
-    ink = (170, 125, 125)  # RGB, easily missed by saturated-red threshold
+    ink = (170, 125, 125)
     cv2.circle(image, (350, 350), 95, ink, 4)
     cv2.circle(image, (350, 350), 75, ink, 3)
-    cv2.putText(image, "TEST", (285, 353), cv2.FONT_HERSHEY_SIMPLEX, 1.0, ink, 3)
+    cv2.putText(image, 'TEST', (285, 353), cv2.FONT_HERSHEY_SIMPLEX, 1.0, ink, 3)
     score, crop = detect_stamp(image)
     assert score >= 0.68
     assert crop is not None
 
 
 def test_only_one_red_circle_not_enough_for_pass():
-    """A circular logo without the inner stamp ring should not be a firm match."""
     image = np.full((700, 700, 3), 255, np.uint8)
     cv2.circle(image, (350, 350), 95, (185, 35, 35), 4)
     score, _ = detect_stamp(image)
     assert score < 0.68
-
-
-def test_short_reply():
-    assert Result("PASS", "Tên khớp", "NAME_FALLBACK").telegram_text() == "✅ PASS\nTên khớp"

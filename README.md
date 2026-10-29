@@ -1,115 +1,97 @@
-# OCR PDF Verification Bot (POC)
+# OCR PDF Bot · Telegram (POC)
 
-Bot Telegram **chỉ nhận PDF**, trả trạng thái **PASS / FAIL / REVIEW** trong tin nhắn Telegram HTML gọn, có chữ đậm và vị trí trang phát hiện dấu. Sau khi đối chiếu dấu, bot còn tìm **tên tại vị trí ký** để so với trường **Đại diện có thẩm quyền** nếu có. Đây là bản thử nghiệm, chưa được nghiệm thu độ chính xác OCR trên nhiều mẫu.
+Bot Telegram tiếp nhận **chỉ file PDF**, nhận diện dấu mộc doanh nghiệp, đối chiếu MST hoặc tên công ty, kiểm tra tên người ký với tên đại diện được **khai báo trong PDF**, và thông báo chữ ký số nhúng nếu có. Không xác minh dấu thật/giả hoặc thẩm quyền pháp lý ngoài nội dung tài liệu.
 
-## Chạy bằng Docker
+## 1. Chạy Docker
 
-Yêu cầu: Docker Engine + Docker Compose v2, không cần GPU, n8n, database hay mở port HTTP.
+Yêu cầu Docker Engine + Compose v2 (không cần GPU, database, n8n hay mở cổng).
 
-1. Tạo bot với @BotFather trên Telegram và lấy token.
-2. Trong terminal chạy:
+```bash
+git clone https://github.com/nguyenxtan/ocr.git
+cd ocr
+cp .env.example .env
+# Mở .env và nhập TELEGRAM_BOT_TOKEN từ @BotFather
+docker compose up -d --build
+```
 
-    git clone https://github.com/nguyenxtan/ocr.git
-    cd ocr
-    cp .env.example .env
+**Cấp quyền:** Sau khi bot khởi động, gõ `/id` trong Telegram để lấy Telegram ID, rồi điền `ALLOWED_USER_IDS=<ID>` trong `.env`. Nếu danh sách này trống, bot **không xử lý bất kỳ PDF nào** (chế độ an toàn). Khởi động lại:
 
-3. Sửa file .env: điền TELEGRAM_BOT_TOKEN của bot.
-4. Chạy: docker compose up -d --build
-5. Xem log: docker compose logs -f bot
-6. Gửi một file PDF trong chat riêng với bot. Dừng bằng docker compose down.
+```bash
+docker compose up -d --force-recreate
+# Xem log
+docker compose logs -f bot
+```
 
-**Bảo mật:** Không commit .env và không gửi bot token vào chat. Mặc định ALLOWED_USER_IDS trống nên bất kỳ người dùng Telegram nào tìm được bot đều có thể dùng. Gõ /id trong bot để lấy Telegram ID, điền ALLOWED_USER_IDS=123456789 vào .env và chạy docker compose up -d --force-recreate để chỉ cho phép tài khoản đó. Mỗi bot chỉ nên chạy một tiến trình polling.
+Không đưa token, PDF khách hàng, CMND hoặc giấy tờ nội bộ vào repo. Docker dùng container không đặc quyền, read-only, bộ nhớ 2 GB, CPU giới hạn. PDF được tải vào thư mục tạm rồi xóa sau lượt kiểm tra.
 
-## Cấu hình .env
+## 2. Quy tắc kiểm tra
 
-- TELEGRAM_BOT_TOKEN: bắt buộc, token BotFather.
-- ALLOWED_USER_IDS: Telegram ID được phép, phân tách dấu phẩy; trống nghĩa là mọi người dùng chat riêng.
-- MAX_PDF_MB: giới hạn dung lượng; tối đa 20 MB theo Bot API tải file thông thường, mặc định 15.
-- MAX_PAGES: giới hạn số trang, mặc định 10.
-- OCR_LANG: ngôn ngữ OCR, mặc định vie+eng.
+1. **Con dấu đỏ/nâu:** Tìm hình tròn ở nhiều trang, nhiều vị trí, loại nhiễu chữ đỏ; không thấy dấu thì FAIL, nghi dấu thì REVIEW.
+2. **MST:** Đọc MST trên con dấu và MST có nhãn trong chứng từ. Hai MST rõ ràng khác nhau thì FAIL; MST không đọc được **không có nghĩa là sai**.
+3. **Tên doanh nghiệp:** Khi MST không đủ dữ liệu, OCR nét mực của dấu riêng và so với tên công ty trong PDF. Hỗ trợ công văn, biểu mẫu và tên công ty xuống dòng; sử dụng tỷ lệ khớp từ khóa đặc trưng, không phải xác suất nhận dạng.
+4. **Tên người ký:** OCR ở vùng chữ ký (tách khỏi trường đại diện). Trùng tên đại diện được khai báo thì MATCH. Khác tên rõ ràng thì FAIL. Chữ viết tay/trang trí hoặc ảnh mờ không đủ căn cứ thì REVIEW. Thiếu trường đại diện được khai báo thì NOT_DECLARED, không tự đoán quyền đại diện.
+5. **Chữ ký số:** Chạy `pdfsig` (Poppler) để kiểm tra chữ ký thực sự nhúng trong PDF, không nhầm ảnh scan dòng chữ “Digitally signed by”. Kiểm tra toàn vẹn mật mã và trạng thái tin cậy chứng thư **riêng biệt**. Chữ ký số không thay thế dấu tròn đỏ nếu tiêu chí nghiệp vụ bắt buộc dấu đỏ.
 
-## Luồng POC
-
-1. Nhận và kiểm tra PDF, mật khẩu, số trang và dung lượng.
-2. PyMuPDF render **tất cả trang**; OpenCV phát hiện **nhiều dấu tròn đỏ/đỏ nâu**, kiểm tra vòng trong và ngoài theo tỷ lệ kích thước trang. Không chỉ chọn dấu có hình tròn rõ nhất.
-3. Ưu tiên **văn bản PDF** khi có; nếu là scan thì OCR. Tìm tên/MST có nhãn trên **nhiều trang**; nếu thiếu nhãn thì tìm doanh nghiệp ở phần đầu **cột trái, giữa, phải**. Hỗ trợ tên xuống dòng; đối chiếu từng vùng dấu bằng 5 lượt OCR.
-4. MST dấu đọc đủ tin cậy và đúng checksum thì so với MST chứng từ. MST mâu thuẫn: **FAIL**, không dùng tên để bỏ qua.
-5. Nếu MST trên dấu không đọc chắc, fallback tên doanh nghiệp. Với **tên ngắn**, các từ phân biệt phải khớp chính xác, tránh nhầm MINH/VINH; tên dài cho phép lỗi OCR nhỏ nếu có đủ từ khác xác nhận. Nếu nhiều tên công ty hoặc nhiều dấu mâu thuẫn: **REVIEW**.
-6. Không phát hiện vòng dấu: **FAIL**. Nếu chỉ thấy vùng nghi dấu hoặc có dấu nhưng không đủ dữ liệu (ví dụ công văn có dấu của cơ quan, không có trường tên doanh nghiệp để đối chiếu): **REVIEW**, kèm trang phát hiện.
-
-### Đối chiếu người ký (POC)
-
-- Trích **tên đại diện được khai báo** từ ô có nhãn như `Đại diện có thẩm quyền` hoặc `Người được ủy quyền`.
-- Đọc **tên in tại vị trí ký** trên các trang, tìm theo vùng tiêu đề ký (`Đại diện khách hàng`, `Giám đốc`, v.v.). Không lấy tên trong ô khai báo tự điền vào khu vực chữ ký.
-- Hai tên OCR rõ và trùng: `MATCH`. Rõ nhưng khác: `MISMATCH`. Nét chữ mờ hoặc chữ ký tay không đọc được: `UNREADABLE`. Không có tên đại diện khai báo: `NOT_DECLARED`.
-- Nếu đã có trường đại diện mà tên ký không đọc chắc: **REVIEW**; khác rõ: **FAIL**. Nếu không có trường đại diện, bot vẫn báo kết quả đối chiếu dấu riêng và thông tin người ký là **chưa đối chiếu**, không suy luận thẩm quyền pháp lý.
-- **Không xác minh** người ký có thẩm quyền ngoài chứng từ, không phân tích tính thật/giả của chữ ký tay hoặc con dấu.
-
-### Mẫu phản hồi Telegram (gọn, có tỷ lệ khớp)
-
-Khi MST không đủ dữ liệu và tên doanh nghiệp khớp:
+## 3. Phản hồi Telegram
 
 ```text
 ✅ HỒ SƠ ĐẠT
 🔴 Dấu đỏ · Trang 2
 🏢 Tên doanh nghiệp: Khớp 86%
 🧾 MST: Chưa thấy trên chứng từ
+✍️ Người ký: Nguyễn Sơn Hải · Chưa đối chiếu
 ```
 
-Nếu MST có trên chứng từ nhưng không đọc chắc được trên dấu:
-
 ```text
-✅ HỒ SƠ ĐẠT
+⚠️ CẦN KIỂM TRA
 🔴 Dấu đỏ · Trang 1
 🏢 Tên doanh nghiệp: Khớp 100%
 🧾 MST: Chưa đọc rõ trên dấu
-```
-
-Tỷ lệ 86% / 100% là kết quả tính trên các PDF mẫu ở lần thử này, **không phải số hardcode**. Công thức: số **từ đặc trưng** trong tên doanh nghiệp được OCR trên dấu và đối chiếu đạt / tổng số từ đặc trưng của tên trong chứng từ, nhân 100%. Đây là tỷ lệ khớp chữ OCR, **không phải xác suất OCR đúng, xác thực con dấu, hay chất lượng hồ sơ**.
-
-Phản hồi bổ sung một dòng người ký:
-
-```text
-✍️ Người ký: Khớp tên đại diện
 ✍️ Người ký: Chưa đọc rõ để đối chiếu
-✍️ Người ký: Nguyen Sơn Hai · Chưa đối chiếu
 ```
 
-Các dòng trên là ví dụ thay thế nhau theo từng trường hợp.
+Chữ ký số có thể bổ sung dòng `🔏 Chữ ký số: Toàn vẹn · Chưa xác thực chứng thư`. Các dòng phụ chỉ xuất hiện khi có dữ liệu. **% khớp tên là mức bao phủ các từ phân biệt mà OCR nhận được**, không phải cam kết độ chính xác hay xác thực pháp lý.
 
-Chỉ hiện `MST: Không khớp` khi có hai MST đọc đủ rõ, đúng cấu trúc nhưng khác nhau. Nếu thiếu MST trên chứng từ hoặc không đọc rõ trên dấu, phải thể hiện rõ thay vì suy đoán. Không tự cho PASS bằng tên khi MST đọc rõ nhưng mâu thuẫn.
+## 4. Công nghệ & cấu hình
 
-Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết quả. Nội bộ giữ `MST_MATCH` hoặc `NAME_FALLBACK`. PASS chỉ là **khớp thông tin dấu và chứng từ**, không kết luận giá trị pháp lý, không phân biệt dấu thật/giả. Chưa kiểm tra người ký/chức vụ hoặc xác thực chữ ký số nhúng; chữ ký số không được coi là dấu đỏ vật lý.
+| Thư viện | Vai trò |
+|---|---|
+| python-telegram-bot | Nhận file và gửi kết quả |
+| PyMuPDF | Đọc / render PDF (cần đánh giá giấy phép AGPL/commercial trước khi thương mại hóa) |
+| OpenCV | Tìm vùng con dấu |
+| Tesseract OCR (vie+eng) | Nhận dạng thông tin dấu, biểu mẫu, tên ký |
+| RapidFuzz | So khớp từ tên doanh nghiệp |
+| Poppler `pdfsig` | Kiểm tra chữ ký số PDF |
 
-## Công nghệ
+`.env.example` cung cấp các tham số: bot token, Telegram ID được phép, giới hạn file và trang, thời gian xử lý, bộ nhớ worker, số lượt xử lý song song và khoảng cách giữa các lượt gửi.
 
-- python-telegram-bot: Telegram long polling, không cần domain hoặc webhook.
-- PyMuPDF: đọc/render PDF; cần lưu ý giấy phép AGPL/commercial nếu đưa vào sản phẩm thương mại.
-- OpenCV, NumPy: nhận diện con dấu tròn đỏ.
-- Tesseract, pytesseract: OCR Việt/Anh chạy trong Docker, đọc 5 vùng cắt của dấu, không gọi AI bên ngoài.
-- RapidFuzz: so khớp tên doanh nghiệp gần đúng theo quy tắc.
+**An toàn:** Mỗi PDF chạy trong một process riêng. Nếu quá hạn xử lý thì bot dừng process, trả REVIEW; không để OCR chạy mãi dưới nền. Tesseract được giới hạn một luồng CPU. Bộ đọc PDF giới hạn kích thước trang render. Không lưu PDF hay ảnh con dấu lâu dài, không log nội dung OCR.
 
-## Kiểm thử
+## 5. Kiểm thử & benchmark
 
-Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
 
-Đã chạy **48 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
-- File scan Cypress có dấu: con dấu khớp, nhưng tên ký màu đỏ chưa OCR đủ rõ, nên khi bật kiểm tra người ký sẽ **REVIEW**. Tên được khai báo: QUAN TUNG ANH.
-- File PDF không dấu đỏ: FAIL.
-- File công văn TCIS, 2 trang: PASS bằng NAME_FALLBACK, dấu trang 2; trước đó REVIEW do chưa OCR đủ chữ ở giữa dấu. Đọc được tên ký Nguyễn Sơn Hải nhưng không có trường đại diện có thẩm quyền để so khớp.
-- PDF dạng công văn có tên công ty tại **góc trên trái**: đã trích xuất được tên từ đầu văn bản; nếu chữ trên dấu chưa đủ rõ, kết quả vẫn là REVIEW thay vì tự đoán PASS.
-- Ảnh chụp công văn 4 trang có dấu đỏ nâu ở trang 4: thuật toán mới nhận diện được dấu **trên ảnh chụp**; chưa có PDF gốc để kiểm tra toàn bộ luồng Telegram. Với chứng từ không có trường tên doanh nghiệp, kết quả đối chiếu sẽ là REVIEW, không phải PASS.
+Bộ kiểm thử chứa ca dương tính, ca âm tính, các tên công ty gần giống, MST mâu thuẫn, nhiều dấu, tên ký không đọc rõ, chữ ký số, xử lý tài nguyên, timeout, path traversal. CI chạy unit tests và build Docker image.
 
-**Chưa kiểm thử Docker và kết nối Telegram thực tế**, do chưa có token. Kết quả 2 file không chứng minh độ chính xác tổng thể; cần bộ dữ liệu có/không dấu, dấu mờ, sai MST để benchmark. Không đưa hồ sơ khách hàng hoặc thông tin nhạy cảm vào repo công khai. File tải về nằm trong thư mục tạm, được xóa sau khi xử lý. Log không lưu nội dung PDF.
+Đo độ chính xác trên các PDF **thực tế**, không commit file riêng tư, bằng manifest JSON Lines `labels.jsonl`:
 
-## Hardcode và khả năng thích ứng
+```json
+{"file":"sample1.pdf","status":"PASS","signer_status":"MATCH"}
+{"file":"sample2.pdf","status":"FAIL"}
+```
 
-- **Không hardcode tên/MST công ty vào thuật toán**. TCIS, Cypress và doanh nghiệp giả định chỉ là dữ liệu ở thư mục `tests/`.
-- Nhận diện công văn, biểu mẫu, PDF scan/PDF văn bản, nhiều trang, nhiều con dấu. Nếu không xác định chắc **đúng đơn vị ban hành** hoặc OCR vùng dấu chưa đủ tin cậy thì trả `REVIEW`, không tự suy đoán.
-- Vẫn tồn tại **tham số thuật toán** như vùng tiêu đề khoảng 1/3 trang, sắc đỏ/nâu, kích thước dấu, độ tin cậy OCR và 5 vùng cắt. Đó là ngưỡng xử lý ảnh, **chưa phải mô hình nhận dạng mọi loại con dấu**.
-- POC hiện chủ yếu dành cho **dấu tròn đỏ**; dấu xanh/đen, con dấu không tròn, scan nghiêng mạnh hoặc bố cục lạ cần thêm dữ liệu để kiểm chuẩn. Không dùng tên doanh nghiệp từ chứng từ để tự điền chữ chưa nhìn thấy trên dấu.
-- Giữ thứ tự: `MST_MATCH` → `NAME_FALLBACK` (chỉ nếu MST không đọc rõ) → `REVIEW/FAIL`. MST đọc rõ mà khác nhau không được dùng fallback để lách.
+```bash
+python -m benchmarks.evaluate --manifest labels.jsonl --base-dir /duong-dan/pdf --out benchmark.json
+```
 
-## Trạng thái
+Báo cáo gồm accuracy, false-PASS, signer accuracy, P50/P95 thời gian, confusion matrix. **Số bài unit test không đại diện tỷ lệ nhận dạng đúng trong thực tế.** Hai PDF E-Port và PDF TCIS chỉ là mẫu ban đầu, chưa đủ thay cho benchmark 50–100 PDF đa dạng.
 
-POC giai đoạn 2: đã bổ sung so khớp tên ký in và tên đại diện khai báo; khi không chắc sẽ REVIEW. Bot **chưa xác minh thẩm quyền pháp lý** hoặc chữ ký số. Bước sau: benchmark nhiều PDF, tối ưu OCR dấu cong và người ký.
+## 6. Giới hạn cần biết
+
+- Chữ ký tay viết nét trang trí có thể không đọc chắc. Trả REVIEW là hành vi đúng, không tự điền tên được khai báo vào vị trí ký.
+- Nhận diện con dấu hiện ưu tiên con dấu tròn đỏ/nâu. Dấu xanh/đen, dấu bầu dục hoặc con dấu vỡ nét cần bộ mẫu mở rộng.
+- Dữ liệu chứng thư số tin cậy theo môi trường xác minh; không đồng nghĩa người ký có đủ thẩm quyền pháp luật. Phần thẩm quyền chỉ đối chiếu **tên trong hồ sơ**, không tra cứu đăng ký doanh nghiệp hoặc giấy ủy quyền.
+- Không có dịch vụ AI trả phí, không dùng GPU. Nếu cần OCR tên ký viết tay chính xác hơn, phải bổ sung mô hình chuyên biệt và đánh giá riêng.

@@ -8,5 +8,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=1777
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 128
     security_opt:
       - no-new-privileges:true

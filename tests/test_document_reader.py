@@ -1,4 +1,4 @@
-from app.document_reader import choose_company, header_regions, read_document_identity
+from app.document_reader import choose_company, header_regions, read_document_identity, DocumentIdentity
 import numpy as np
 
 
@@ -28,59 +28,46 @@ def test_reject_competing_company_names():
 
 
 class MockPage:
-    def __init__(self, text):
-        self.text = text
-
-    def get_text(self, _: str):
-        return self.text
+    def __init__(self, text): self.text = text
+    def get_text(self, _: str): return self.text
 
 
 def test_reads_labeled_fields_on_later_page_without_ocr():
-    pages = [
-        MockPage("Nội dung tài liệu rất dài, không chứa thông tin đăng ký doanh nghiệp. " * 3),
-        MockPage("Thông tin mẫu biểu\nTên doanh nghiệp CÔNG TY TNHH MINH AN\nMST doanh nghiệp: 3501556139\n" * 3),
-    ]
-
-    def render(_):
-        return np.zeros((100, 100, 3), np.uint8)
-
+    pages = [MockPage("Nội dung tài liệu rất dài, không chứa thông tin đăng ký doanh nghiệp. " * 3),
+             MockPage("Thông tin mẫu biểu\nTên doanh nghiệp CÔNG TY TNHH MINH AN\nMST doanh nghiệp: 3501556139\n" * 3)]
+    def no_ocr(_): return np.zeros((100,100,3), np.uint8)
     def fields(text):
-        if "MINH AN" in text:
-            return "CONG TY TNHH MINH AN", "3501556139"
+        if "MINH AN" in text: return "CONG TY TNHH MINH AN", "3501556139"
         return None, None
-
     from unittest.mock import patch
-    with patch("app.document_reader.pytesseract.image_to_string", return_value=""):
-        identity = read_document_identity(pages, render, fields)
+    with patch("app.document_reader.pytesseract.image_to_string",return_value=""):
+        identity = read_document_identity(pages, no_ocr, fields)
     assert identity.company == "CONG TY TNHH MINH AN"
     assert identity.mst == "3501556139"
 
 
 def test_allows_unknown_company():
-    name, ambiguous = choose_company([])
-    assert name is None and not ambiguous
+    c, ambiguous = choose_company([])
+    assert c is None and not ambiguous
 
 
 def test_read_right_issuer_on_scanned_second_page():
+    import numpy as np
     class Page:
-        def get_text(self, _):
-            return ""
-
+        def get_text(self, _): return ""
     img = np.zeros((300, 400, 3), dtype=np.uint8)
     img[:100, 250:] = 255
-
     def mocked_ocr(region, **_):
-        return "CÔNG TY TNHH KỸ THUẬT MINH PHÚC" if region.shape[1] < 400 and region.mean() > 80 else ""
-
+        return 'CÔNG TY TNHH KỸ THUẬT MINH PHÚC' if region.shape[1] < 400 and region.mean() > 80 else ''
     from unittest.mock import patch
-    with patch("app.document_reader.pytesseract.image_to_string", side_effect=mocked_ocr):
+    with patch('app.document_reader.pytesseract.image_to_string', side_effect=mocked_ocr):
         identity = read_document_identity([Page(), Page()], lambda _: img, lambda _: (None, None))
-    assert identity.company == "CONG TY TNHH KY THUAT MINH PHUC"
+    assert identity.company == 'CONG TY TNHH KY THUAT MINH PHUC'
     assert not identity.ambiguous
 
 
 def test_new_types_of_business_headings():
     from app.fields import extract_letterhead_company
-    assert extract_letterhead_company("TẬP ĐOÀN PHÁT TRIỂN CÔNG NGHỆ VIỆT\nSố: 01/KH") == (
-        "TAP DOAN PHAT TRIEN CONG NGHE VIET"
+    assert extract_letterhead_company('TẬP ĐOÀN PHÁT TRIỂN CÔNG NGHỆ VIỆT\nSố: 01/KH') == (
+        'TAP DOAN PHAT TRIEN CONG NGHE VIET'
     )

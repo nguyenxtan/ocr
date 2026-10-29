@@ -11,9 +11,12 @@ import unicodedata
 import cv2
 import fitz
 import numpy as np
+import pytesseract
+from rapidfuzz import fuzz
 from app.document_reader import read_document_identity
 from app.seal_ocr import read_seal, compare_name, strict_name_match
-from app.signatories import inspect_signatures
+from app.signatories import SignerCheck, inspect_signatures
+from app.digital_signatures import inspect_digital_signatures
 
 
 @dataclass(frozen=True)
@@ -23,9 +26,11 @@ class Result:
     method: str | None = None
     stamp_page: int | None = None
     name_match_pct: int | None = None
-    mst_status: str | None = None
+    mst_status: str | None = None  # MATCH | MISMATCH | NO_DOC | UNREADABLE | CONFLICT
     signer_status: str | None = None
     signer_name: str | None = None
+    digital_signature: str | None = None
+    digital_trusted: bool | None = None
 
     def telegram_html(self) -> str:
         headings = {
@@ -38,14 +43,20 @@ class Result:
             lines.append(f"🔴 Dấu đỏ · Trang {self.stamp_page}")
         elif self.status == "FAIL":
             lines.append(f"🔎 {escape(self.reason)}")
+            if self.digital_signature in ("VALID_CRYPTO", "UNVERIFIED", "INVALID"):
+                lines.append("🔏 Chữ ký số: Có · Không thay thế dấu đỏ")
             return "\n".join(lines)
+
         if self.method == "NAME_FALLBACK":
-            ratio = f" {self.name_match_pct}%" if self.name_match_pct is not None else ""
+            ratio = (
+                f" {self.name_match_pct}%" if self.name_match_pct is not None else ""
+            )
             lines.append(f"🏢 Tên doanh nghiệp: <b>Khớp{ratio}</b>")
         elif self.status == "REVIEW" and self.stamp_page is not None and not self.signer_status:
             lines.append(f"🔎 {escape(self.reason)}")
         elif self.status == "FAIL" and self.mst_status != "MISMATCH" and self.signer_status != "MISMATCH":
             lines.append(f"🔎 {escape(self.reason)}")
+
         mst_messages = {
             "MATCH": "🧾 MST: <b>Khớp</b>",
             "MISMATCH": "🧾 MST: <b>Không khớp</b>",
@@ -70,6 +81,15 @@ class Result:
             lines.append(f"✍️ Người ký: {escape(self.signer_name)} · <b>{result}</b>")
         elif self.signer_status in signer_labels:
             lines.append(signer_labels[self.signer_status])
+        if self.digital_signature in ("VALID_CRYPTO", "UNVERIFIED", "INVALID"):
+            if self.digital_signature == "INVALID":
+                lines.append("🔏 Chữ ký số: Có · Không toàn vẹn")
+            elif self.digital_signature == "VALID_CRYPTO" and self.digital_trusted is True:
+                lines.append("🔏 Chữ ký số: Toàn vẹn · Chứng thư tin cậy")
+            elif self.digital_signature == "VALID_CRYPTO":
+                lines.append("🔏 Chữ ký số: Toàn vẹn · Chưa xác thực chứng thư")
+            else:
+                lines.append("🔏 Chữ ký số: Có · Chưa xác minh")
         return "\n".join(lines)
 
     def telegram_text(self) -> str:
@@ -114,48 +134,42 @@ def extract_document_fields(text: str) -> tuple[str | None, str | None]:
     return company, mst
 
 
+LEGAL_WORDS = {
+    "CONG", "TY", "CO", "PHAN", "COPHAN", "TNHH", "MTV", "TRACH",
+    "NHIEM", "HUU", "HAN", "DOANH", "NGHIEP", "CTCP", "CP",
+}
+
+
 def name_matches(company: str, stamp_text: str) -> bool:
     """Strict direct comparison; OCR evidence matching is in app.seal_ocr."""
     return strict_name_match(company, stamp_text)
 
 
-def red_mask(rgb: np.ndarray) -> np.ndarray:
-    """Capture faded red/brown stamp ink, not only saturated bright red.
-
-    Scan compression and printer ink often lower saturation considerably.
-    Geometry checks below distinguish circular seals from ordinary red text.
-    """
+def red_mask(rgb):
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    # Ink on scanned paper frequently looks faded pink or brown rather than saturated red.
     return cv2.bitwise_or(
         cv2.inRange(hsv, (0, 30, 40), (24, 255, 255)),
         cv2.inRange(hsv, (164, 30, 40), (180, 255, 255)),
     )
 
-
-def ring_coverage(
-    mask: np.ndarray,
-    x: int,
-    y: int,
-    radius: int,
-    offsets: tuple[int, ...] = (-8, -4, 0, 4, 8),
-) -> float:
-    """Fraction of angular sectors supported by red/brown pixels on the rim."""
+def ring_coverage(mask, x, y, radius, offsets=(-8,-4,0,4,8)):
     height, width = mask.shape
     matched = 0
-    for theta in np.linspace(0, 2 * np.pi, 72, endpoint=False):
+    for theta in np.linspace(0, 2*np.pi, 72, endpoint=False):
         for offset in offsets:
-            xx = round(x + (radius + offset) * np.cos(theta))
-            yy = round(y + (radius + offset) * np.sin(theta))
-            if 0 <= xx < width and 0 <= yy < height and mask[yy, xx]:
+            xx = round(x+(radius+offset)*np.cos(theta))
+            yy = round(y+(radius+offset)*np.sin(theta))
+            if 0<=xx<width and 0<=yy<height and mask[yy,xx]:
                 matched += 1
                 break
     return matched / 72
 
-
 def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float, np.ndarray]]:
-    """Return multiple circular-seal candidates using page-relative geometry.
+    """Return multiple candidate circular seals, ordered by geometry evidence.
 
-    No fixed page size, fixed stamp location or assumed single seal.
+    Geometric ratios are relative to the page dimensions so both portrait and
+    landscape PDFs work without knowing page size or scan resolution.
     """
     mask = red_mask(rgb)
     height, width = mask.shape
@@ -191,7 +205,7 @@ def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float,
     scored.sort(key=lambda item: item[0], reverse=True)
     selected = []
     for score, crop, x, y, radius in scored:
-        # Discard duplicate Hough rings around the same physical seal.
+        # Skip duplicate Hough rings around the very same physical seal.
         if any((x - px) ** 2 + (y - py) ** 2 < max(radius, pr) ** 2 * 0.5
                for _, _, px, py, pr in selected):
             continue
@@ -201,33 +215,48 @@ def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float,
     return [(score, crop) for score, crop, _, _, _ in selected]
 
 
-def detect_stamp(rgb: np.ndarray) -> tuple[float, np.ndarray | None]:
-    """Backward-compatible strongest candidate from one page."""
-    candidates = detect_stamps(rgb, max_candidates=1)
-    return candidates[0] if candidates else (0.0, None)
+def detect_stamp(rgb):
+    """Compatibility wrapper for the strongest candidate on a page."""
+    results = detect_stamps(rgb, max_candidates=1)
+    return results[0] if results else (0.0, None)
 
 
 def render_page(page: fitz.Page) -> np.ndarray:
-    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), colorspace=fitz.csRGB, alpha=False)
+    max_pixels = 6_000_000
+    width, height = page.rect.width, page.rect.height
+    if width <= 0 or height <= 0 or width * height > max_pixels * 4:
+        raise ValueError("PDF page geometry exceeds safe rendering limits")
+    scale = min(2.0, (max_pixels / (width * height)) ** 0.5)
+    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
     return np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3).copy()
 
 
 def check_signer_for_pass(result: Result, doc, ocr_lang: str) -> Result:
-    """Compare independently read signer and declared representative names.
+    """Apply signer comparison when a declared authorized representative exists.
 
-    Keep stamp-only PASS when the form has no named representative field.
-    Low-confidence signer OCR must trigger REVIEW, never a false name match.
+    For documents with no such field, retain stamp result but report the missing
+    cross-reference. Never silently mark an unreadable signer as matching.
     """
     signature = inspect_signatures(doc, render_page, ocr_lang)
-    checked = replace(result, signer_status=signature.status, signer_name=signature.signed)
+    updated = replace(result, signer_status=signature.status, signer_name=signature.signed)
     if signature.status == "MISMATCH":
-        return replace(checked, status="FAIL", reason="Người ký không khớp đại diện khai báo.")
+        return replace(updated, status="FAIL", reason="Người ký không khớp đại diện khai báo.")
     if signature.status == "UNREADABLE":
-        return replace(checked, status="REVIEW", reason="Chưa đọc chắc tên người ký.")
-    return checked
+        return replace(updated, status="REVIEW", reason="Chưa đọc chắc tên người ký.")
+    return updated
 
 
 def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> Result:
+    """Match physical seal fields; report digital PDF signature separately."""
+    result = _analyze_stamp_pdf(path, max_pages, ocr_lang)
+    signature = inspect_digital_signatures(path)
+    if signature.status == "INVALID" and result.status == "PASS":
+        result = replace(result, status="REVIEW", reason="Chữ ký số nhúng không toàn vẹn.")
+    return replace(result, digital_signature=signature.status,
+                   digital_trusted=signature.trusted)
+
+
+def _analyze_stamp_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> Result:
     try:
         with fitz.open(path) as doc:
             if not doc.is_pdf:
@@ -251,13 +280,12 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
             best_page = strong[0][2]
             identity = read_document_identity(doc, render_page, extract_document_fields, ocr_lang)
             if identity.ambiguous:
-                return Result("REVIEW", "Có nhiều tên doanh nghiệp ở phần đầu chứng từ.",
-                              stamp_page=best_page)
+                return Result("REVIEW", "Có nhiều tên doanh nghiệp ở phần đầu chứng từ.", stamp_page=best_page)
             company, doc_mst = identity.company, identity.mst
             if not company:
-                return Result("REVIEW", "Chưa đọc được tên doanh nghiệp trên chứng từ.",
-                              stamp_page=best_page)
-            # Validate EACH likely seal instead of trusting only the strongest circle.
+                return Result("REVIEW", "Chưa đọc được tên doanh nghiệp trên chứng từ.", stamp_page=best_page)
+            # Verify each likely seal, rather than assuming the strongest
+            # circle is the one identifying the issuing company.
             matched_mst: list[int] = []
             mismatched_mst: list[int] = []
             matched_name: list[tuple[int, int]] = []
@@ -275,10 +303,10 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                     else:
                         mismatched_mst.append(stamp_page)
                     continue
-                name = compare_name(company, evidence)
-                if name.matched and name.match_pct is not None:
-                    matched_name.append((stamp_page, name.match_pct))
-            # Never confuse an unreadable tax code with a mismatched tax code.
+                match = compare_name(company, evidence)
+                if match.matched and match.match_pct is not None:
+                    matched_name.append((stamp_page, match.match_pct))
+            # Do not treat an unreadable MST as a mismatch.
             mst_unverified = "UNREADABLE" if doc_mst else "NO_DOC"
             if mismatched_mst and (matched_mst or matched_name or unresolved):
                 return Result("REVIEW", "Nhiều dấu có thông tin mâu thuẫn.",
@@ -291,10 +319,10 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                                 "MST_MATCH", matched_mst[0], mst_status="MATCH")
                 return check_signer_for_pass(result, doc, ocr_lang)
             if matched_name and not unresolved:
-                page, pct = max(matched_name, key=lambda m: m[1])
+                page, match_pct = max(matched_name, key=lambda m: m[1])
                 result = Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
-                                "NAME_FALLBACK", page, name_match_pct=pct,
-                                mst_status=mst_unverified)
+                                "NAME_FALLBACK", page,
+                                name_match_pct=match_pct, mst_status=mst_unverified)
                 return check_signer_for_pass(result, doc, ocr_lang)
             return Result("REVIEW", "Chưa đối chiếu chắc thông tin trên dấu.",
                           stamp_page=best_page,

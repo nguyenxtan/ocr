@@ -1,7 +1,7 @@
-"""Compare declared representative names with independently OCR-read printed signers.
+"""Compare a declared representative with independently read printed signer names.
 
-Do not infer legal authority from a stamp or title. Uncertain handwriting OCR
-must return UNREADABLE rather than manufacturing a name match.
+Do not infer legal authority from a title/stamp. A handwritten flourish is not
+machine-readable proof of a name; low-confidence OCR must remain UNREADABLE.
 """
 from __future__ import annotations
 
@@ -57,6 +57,16 @@ class SignerCheck:
     signed: str | None = None
     page: int | None = None
 
+    @property
+    def label(self) -> str:
+        labels = {
+            "MATCH": "✍️ Người ký: <b>Khớp</b>",
+            "MISMATCH": "✍️ Người ký: <b>Không khớp</b>",
+            "UNREADABLE": "✍️ Người ký: Chưa đọc rõ để đối chiếu",
+            "NOT_DECLARED": "✍️ Người ký: Chưa có tên đại diện để đối chiếu",
+        }
+        return labels[self.status]
+
 
 def normalize(value: str) -> str:
     value = value.replace("đ", "d").replace("Đ", "D")
@@ -73,7 +83,7 @@ def compact_name(text: str) -> str:
 def ocr_lines(img: np.ndarray, lang: str, psm: int) -> list[OCRLine]:
     data = pytesseract.image_to_data(
         img, lang=lang, config=f"--psm {psm}",
-        output_type=pytesseract.Output.DICT,
+        output_type=pytesseract.Output.DICT, timeout=12,
     )
     grouped: dict[tuple[int, int, int], list[OCRWord]] = {}
     for i, text in enumerate(data["text"]):
@@ -99,7 +109,7 @@ REPRESENTATIVE_LABELS = (
 
 
 def declared_from_lines(lines: list[OCRLine]) -> str | None:
-    """Extract only specifically labeled representative fields, never body names."""
+    """Extract only a specifically labeled representative, never a person in body."""
     for line in lines:
         norm = normalize(line.text)
         marker = next((match for pattern in REPRESENTATIVE_LABELS
@@ -117,8 +127,9 @@ def declared_from_lines(lines: list[OCRLine]) -> str | None:
     return None
 
 
+
 def merge_visual_rows(lines: list[OCRLine], height: int) -> list[OCRLine]:
-    """Join sparse OCR blocks on one baseline (form label + separate text value)."""
+    """Join sparse OCR blocks lying on one visual baseline (form label + value)."""
     groups: list[list[OCRWord]] = []
     rows: list[float] = []
     tolerance = max(4, height * 0.008)
@@ -133,27 +144,31 @@ def merge_visual_rows(lines: list[OCRLine], height: int) -> list[OCRLine]:
             groups[slot].extend(line.words)
     return [OCRLine(tuple(sorted(group, key=lambda w: w.x))) for group in groups]
 
-
 SIGNATURE_TITLES = (
     "DAI DIEN KHACH HANG", "DAI DIEN DOANH NGHIEP",
     "NGUOI KY", "GIAM DOC", "GIAM BOC", "TONG GIAM DOC",
-    "CHU TICH", "THU TRUONG", "TP KHAI THAC",
+    "CHU TICH", "THU TRUONG",
 )
 EXCLUDED_NAME_WORDS = frozenset({
     "CONG", "TY", "PHAN", "CO", "GIAM", "DOC", "BOC", "THONG", "TIN",
     "THAC", "KHAI", "CANG", "CANH",
     "DUNG", "CHUC", "KY", "GHI", "TEN", "NGAY", "THANG", "NAM",
 })
-RANK_PREFIXES = frozenset({"THUONG", "TRUNG", "THIEU", "DAI", "TA", "UY", "ONG", "BA", "HA"})
+RANK_PREFIXES = frozenset({"THUONG", "TRUNG", "THIEU", "DAI", "TA", "UY", "ONG", "BA"})
 
 
 def signature_anchors(lines: list[OCRLine]) -> list[OCRLine]:
+    """Only distinct signing-block titles, not job titles in the body/form."""
     result = []
     for line in lines:
         norm = normalize(line.text)
         if "DE PHE DUYET" in norm or "DE BAO CAO" in norm:
-            continue  # Recipient lists are not signature blocks.
-        if any(title in norm for title in SIGNATURE_TITLES):
+            continue
+        if norm.startswith(("DAI DIEN KHACH HANG", "DAI DIEN DOANH NGHIEP")):
+            result.append(line)
+            continue
+        if norm in ("GIAM DOC", "GIAM BOC", "TONG GIAM DOC", "CHU TICH",
+                    "THU TRUONG", "NGUOI KY"):
             result.append(line)
             continue
         if len(norm.split()) <= 3 and max(
@@ -164,7 +179,10 @@ def signature_anchors(lines: list[OCRLine]) -> list[OCRLine]:
 
 
 def candidate_from_line(line: OCRLine) -> tuple[str, float] | None:
-    """A printed personal name near a signing title, not a company/stamp word."""
+    """A printed person name immediately beneath a signing title.
+
+    Mixed case and OCR confidence discriminate names from uppercase stamp text.
+    """
     words = list(line.words)
     while words and normalize(words[0].text) in RANK_PREFIXES:
         words.pop(0)
@@ -173,11 +191,14 @@ def candidate_from_line(line: OCRLine) -> tuple[str, float] | None:
     normalized = [normalize(w.text) for w in words]
     if any(not value.isalpha() or len(value) < 2 for value in normalized):
         return None
-    if any(value in EXCLUDED_NAME_WORDS for value in normalized):
+    if any(value in (EXCLUDED_NAME_WORDS - {"QUAN"}) for value in normalized):
         return None
     titlecase = sum(word.text[:1].isupper() and any(c.islower() for c in word.text)
                     for word in words)
-    if titlecase < min(2, len(words)):
+    uppercase_name = (len(words) >= 3 and
+                      all(normalize(w.text) == w.text for w in words) and
+                      min(w.confidence for w in words) >= 85)
+    if titlecase < min(2, len(words)) and not uppercase_name:
         return None
     return " ".join(w.text for w in words), min(w.confidence for w in words)
 
@@ -188,6 +209,8 @@ def signer_from_lines(lines: list[OCRLine], width: int, height: int) -> tuple[st
     for anchor in anchors:
         cx = (anchor.x + anchor.right) / 2
         for line in lines:
+            if anchor.y < height * .12:
+                continue
             if not 0 <= line.y - anchor.bottom <= height * .26:
                 continue
             signer_cx = (line.x + line.right) / 2
@@ -197,8 +220,10 @@ def signer_from_lines(lines: list[OCRLine], width: int, height: int) -> tuple[st
             if picked is None:
                 continue
             name, confidence = picked
+            # Prefer the closest printed name after its signature title.
             gap = (line.y - anchor.bottom) / height
-            candidates.append((confidence - gap * 30, name, confidence))
+            rank = confidence - gap * 30
+            candidates.append((rank, name, confidence))
     if not candidates:
         return None
     _, name, confidence = max(candidates, key=lambda value: value[0])
@@ -211,12 +236,16 @@ def compare_signer(declared: str | None, signed: str | None,
         return SignerCheck("NOT_DECLARED", signed=signed, page=page)
     if not signed or confidence is None or confidence < 85:
         return SignerCheck("UNREADABLE", declared=declared, signed=signed, page=page)
-    status = "MATCH" if compact_name(declared) == compact_name(signed) else "MISMATCH"
-    return SignerCheck(status, declared=declared, signed=signed, page=page)
+    # High-confidence independent OCR only. OCR artifacts must not become FAIL.
+    if compact_name(declared) == compact_name(signed):
+        return SignerCheck("MATCH", declared=declared, signed=signed, page=page)
+    if confidence < 95:
+        return SignerCheck("UNREADABLE", declared=declared, signed=signed, page=page)
+    return SignerCheck("MISMATCH", declared=declared, signed=signed, page=page)
 
 
-def inspect_signatures(doc, render_page: Callable, lang: str = "vie+eng") -> SignerCheck:
-    """OCR both sources independently, across all pages."""
+def inspect_signatures(doc, render_page: Callable,
+                      lang: str = "vie+eng") -> SignerCheck:
     declared = None
     candidates = []
     for page_number, page in enumerate(doc, start=1):
@@ -224,6 +253,7 @@ def inspect_signatures(doc, render_page: Callable, lang: str = "vie+eng") -> Sig
         sparse = ocr_lines(image, lang, 11)
         if not declared:
             declared = declared_from_lines(merge_visual_rows(sparse, image.shape[0]))
+        # Signer candidates must come from signature anchors, not declaration fields.
         signed = signer_from_lines(sparse, image.shape[1], image.shape[0])
         if signed:
             candidates.append((signed[1], signed[0], page_number))

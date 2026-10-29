@@ -1,0 +1,43 @@
+"""Isolated local subprocess for CPU-heavy PDF/OCR work.
+
+A Telegram user controls PDF bytes, so timeout the *process* rather than merely
+cancelling an asyncio thread. The worker prints only one compact JSON object.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict
+import json
+import os
+from pathlib import Path
+import sys
+
+from app.analysis import analyze_pdf
+
+
+def restrict_resources() -> None:
+    if sys.platform != "linux":
+        return
+    import resource
+    limit_mb = int(os.getenv("WORKER_MEMORY_MB", "1536"))
+    limit_bytes = limit_mb * 1024 * 1024
+    # Virtual-address limit is intentionally generous for OpenCV shared libraries.
+    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+    max_cpu = int(os.getenv("WORKER_CPU_SECONDS", "90"))
+    resource.setrlimit(resource.RLIMIT_CPU, (max_cpu, max_cpu + 5))
+
+
+def main() -> None:
+    os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+    restrict_resources()
+    if len(sys.argv) != 4:
+        raise SystemExit(2)
+    path = Path(sys.argv[1])
+    pages = int(sys.argv[2])
+    languages = sys.argv[3]
+    result = analyze_pdf(path, pages, languages)
+    sys.stdout.write(json.dumps(asdict(result), ensure_ascii=False))
+    sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

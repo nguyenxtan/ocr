@@ -50,7 +50,7 @@ class SealEvidence:
 def read_seal(mask: np.ndarray, lang: str, tax_code_valid) -> SealEvidence:
     """Read red pixels only; center crops reduce circular lettering interference.
 
-    Uses five passes of the existing on-device Tesseract; no external AI and
+    Uses four passes of the existing on-device Tesseract; no external AI and
     never copies the PDF document name into the stamp OCR result.
     """
     side = min(mask.shape[:2])
@@ -71,7 +71,7 @@ def read_seal(mask: np.ndarray, lang: str, tax_code_valid) -> SealEvidence:
         if fraction == 0.82:
             black_on_white = cv2.erode(black_on_white, np.ones((2, 2), np.uint8))
         rows = pytesseract.image_to_data(black_on_white, lang=lang,
-                config=f"--psm {psm}", output_type=pytesseract.Output.DICT)
+                config=f"--psm {psm}", output_type=pytesseract.Output.DICT, timeout=12)
         words = [(str(text).strip(), float(conf))
                  for text, conf in zip(rows["text"], rows["conf"])
                  if str(text).strip()]
@@ -95,18 +95,21 @@ class NameComparison:
 
 
 def compare_name(company: str, evidence: SealEvidence) -> NameComparison:
-    """Compare distinctive business-name words across stamp OCR variants.
+    """Compare distinctive business-name words seen in seal OCR variants.
 
-    match_pct is token coverage, NOT model confidence or legal authenticity.
+    match_pct is the fraction of distinctive company-name tokens supported
+    by stamp OCR; it is NOT confidence or probability of authenticity.
     """
     expected = distinct_tokens(company)
     if len(expected) < 2:
         return NameComparison(False, None)
+
     found = set()
     for variant in evidence.variants:
         found.update(x for x in normalize(variant).split() if len(x) >= 3)
     if not found:
         return NameComparison(False, None)
+
     exact_hits = [token for token in expected if token in found]
     allowed_fuzzy = len(expected) >= 5 and len(exact_hits) >= 3
     hits: list[str] = []
@@ -118,6 +121,7 @@ def compare_name(company: str, evidence: SealEvidence) -> NameComparison:
         best = max((fuzz.ratio(token, candidate) for candidate in found), default=0)
         if allowed_fuzzy and best >= threshold:
             hits.append(token)
+
     unexpected_central = any(
         not any(fuzz.ratio(word, part) >= 88 or word in part for part in expected)
         for word in evidence.strong_central_tokens - GENERIC
@@ -125,12 +129,15 @@ def compare_name(company: str, evidence: SealEvidence) -> NameComparison:
     coverage = len(hits) / len(expected)
     match_pct = round(100 * coverage)
     distinct_long = sum(len(token) >= 4 for token in set(hits))
-    matched = (not unexpected_central and coverage >= 0.85
-               and distinct_long >= 1
-               and len(hits) >= min(3, len(expected)))
+    matched = (
+        not unexpected_central
+        and coverage >= 0.85
+        and distinct_long >= 1
+        and len(hits) >= min(3, len(expected))
+    )
     return NameComparison(matched, match_pct)
 
 
 def corroborated_name_match(company: str, evidence: SealEvidence) -> bool:
-    """Backwards-compatible boolean match decision."""
+    """Backwards-compatible safe match decision."""
     return compare_name(company, evidence).matched

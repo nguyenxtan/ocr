@@ -1,36 +1,47 @@
-"""Telegram bot entrypoint: only PDF, only brief result status."""
-
+"""Private Telegram PDF POC with isolated OCR and concise result messages."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
 from pathlib import Path
+import re
+import time
 from tempfile import TemporaryDirectory
 
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
-from app.analysis import Result, analyze_pdf
+from app.analysis import Result
+from app.runtime import analyze_isolated
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip().isdigit()}
+ALLOWED = {int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip().isdigit()}
 MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "15"))
 MAX_PAGES = int(os.getenv("MAX_PAGES", "10"))
 OCR_LANG = os.getenv("OCR_LANG", "vie+eng")
+PROCESS_TIMEOUT_SEC = int(os.getenv("PROCESS_TIMEOUT_SEC", "90"))
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_PDFS", "1"))
+COOLDOWN_SEC = int(os.getenv("USER_COOLDOWN_SEC", "10"))
+semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+last_seen: dict[int, float] = {}
 
 
 def is_allowed(update: Update) -> bool:
-    return bool(update.effective_user and (not ALLOWED or update.effective_user.id in ALLOWED))
+    """Fail closed: empty allowlist is never 'open to everyone'."""
+    return bool(update.effective_user and update.effective_user.id in ALLOWED)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message:
-        await update.effective_message.reply_text("Gửi một file PDF để kiểm tra. Kết quả: PASS / FAIL / REVIEW.\nDùng /id để xem Telegram ID.")
+        await update.effective_message.reply_text(
+            "📄 Gửi file PDF để kiểm tra dấu, MST và người ký.\n"
+            "Dùng /id để xem ID Telegram và cấu hình quyền truy cập."
+        )
 
 
 async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -38,57 +49,82 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text(f"Telegram ID: {update.effective_user.id}")
 
 
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-    if message is None or not is_allowed(update):
-        if message:
-            await message.reply_text("⛔ Không có quyền sử dụng bot.")
+    if message is None:
         return
-    document = message.document
-    if document is None:
+    if not is_allowed(update):
+        await message.reply_text("⛔ Chưa được cấp quyền. Gõ /id rồi thêm ID vào ALLOWED_USER_IDS.")
         return
-    if not document.file_name or not document.file_name.lower().endswith(".pdf"):
-        await message.reply_text("Chỉ hỗ trợ file PDF.")
+    doc = message.document
+    if not doc or not doc.file_name or not doc.file_name.lower().endswith(".pdf"):
+        await message.reply_text("Chỉ nhận PDF.")
         return
-    if document.file_size and document.file_size > MAX_PDF_MB * 1024 * 1024:
+    if doc.file_size and doc.file_size > MAX_PDF_MB * 1024 * 1024:
         await message.reply_text(Result("REVIEW", "PDF vượt giới hạn dung lượng.").telegram_html(), parse_mode=ParseMode.HTML)
         return
-    await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    now = time.monotonic()
+    user_id = update.effective_user.id
+    if now - last_seen.get(user_id, -float("inf")) < COOLDOWN_SEC:
+        await message.reply_text("⏳ Vui lòng giãn cách giữa các lượt gửi PDF.")
+        return
     try:
-        with TemporaryDirectory(prefix="ocr-pdf-") as temp_dir:
-            path = Path(temp_dir) / "upload.pdf"
-            remote_file = await document.get_file()
-            await remote_file.download_to_drive(custom_path=path)
-            if path.stat().st_size > MAX_PDF_MB * 1024 * 1024:
-                await message.reply_text(Result("REVIEW", "PDF vượt giới hạn dung lượng.").telegram_html(), parse_mode=ParseMode.HTML)
-                return
-            with path.open("rb") as f:
-                if f.read(5) != b"%PDF-":
-                    await message.reply_text(Result("REVIEW", "File không đúng định dạng PDF.").telegram_html(), parse_mode=ParseMode.HTML)
-                    return
-            result = await asyncio.to_thread(analyze_pdf, path, MAX_PAGES, OCR_LANG)
-            await message.reply_text(result.telegram_html(), parse_mode=ParseMode.HTML)
-    except Exception:
-        logger.exception("PDF processing failed")
-        await message.reply_text(Result("REVIEW", "Có lỗi khi phân tích PDF.").telegram_html(), parse_mode=ParseMode.HTML)
+        await asyncio.wait_for(semaphore.acquire(), timeout=1.0)
+    except asyncio.TimeoutError:
+        await message.reply_text("⏳ Bot đang xử lý PDF khác, vui lòng thử lại.")
+        return
+    last_seen[user_id] = now
+    try:
+        await context.bot.send_chat_action(message.chat_id, ChatAction.TYPING)
+        with TemporaryDirectory(prefix="ocr-pdf-") as folder:
+            file_path = Path(folder) / "upload.pdf"
+            remote_file = await doc.get_file()
+            await remote_file.download_to_drive(custom_path=file_path)
+            if file_path.stat().st_size > MAX_PDF_MB * 1024 * 1024:
+                result = Result("REVIEW", "PDF vượt giới hạn dung lượng.")
+            else:
+                with file_path.open("rb") as stream:
+                    valid_pdf = stream.read(5) == b"%PDF-"
+                if not valid_pdf:
+                    result = Result("REVIEW", "Tệp không phải PDF hợp lệ.")
+                else:
+                    result = await analyze_isolated(file_path, MAX_PAGES, OCR_LANG, PROCESS_TIMEOUT_SEC)
+        await message.reply_text(result.telegram_html(), parse_mode=ParseMode.HTML)
+        log.info("Processed PDF: status=%s, stamp_page=%s, signer=%s",
+                 result.status, result.stamp_page, result.signer_status)
+    except Exception as e:
+        log.error("PDF failed: error_type=%s", type(e).__name__)
+        await message.reply_text(Result("REVIEW", "Không xử lý được PDF.").telegram_html(), parse_mode=ParseMode.HTML)
+    finally:
+        semaphore.release()
 
 
-async def other_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message:
         await update.effective_message.reply_text("Chỉ nhận file PDF.")
 
 
-def main() -> None:
+def validate_config() -> None:
     if not TOKEN or TOKEN == "PASTE_YOUR_TOKEN_HERE":
-        raise RuntimeError("Vui lòng điền TELEGRAM_BOT_TOKEN trong .env")
-    if not 1 <= MAX_PDF_MB <= 20:
-        raise RuntimeError("MAX_PDF_MB phải trong khoảng 1..20 (giới hạn tải file Telegram Bot API).")
-    app = ApplicationBuilder().token(TOKEN).build()
+        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN trong .env")
+    if not ALLOWED:
+        log.warning("Allowlist empty: /id is available but all PDF processing is disabled")
+    if not 1 <= MAX_PDF_MB <= 20 or not 1 <= MAX_PAGES <= 30:
+        raise RuntimeError("MAX_PDF_MB phải 1..20 và MAX_PAGES phải 1..30")
+    if not 10 <= PROCESS_TIMEOUT_SEC <= 300 or not 1 <= MAX_CONCURRENT <= 3:
+        raise RuntimeError("PROCESS_TIMEOUT_SEC phải 10..300, MAX_CONCURRENT_PDFS phải 1..3")
+    if not re.fullmatch(r"[a-z]{3}(\+[a-z]{3}){0,3}", OCR_LANG):
+        raise RuntimeError("OCR_LANG không hợp lệ")
+
+
+def main() -> None:
+    validate_config()
+    app = ApplicationBuilder().token(TOKEN).concurrent_updates(4).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", show_id))
-    app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_pdf))
-    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, other_message))
-    logger.info("Starting Telegram PDF bot (polling)")
+    app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, pdf))
+    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, other))
+    log.info("Starting Telegram PDF OCR bot (private mode)")
     app.run_polling(drop_pending_updates=True, allowed_updates=["message"])
 
 
