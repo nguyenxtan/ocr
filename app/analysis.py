@@ -11,8 +11,7 @@ import unicodedata
 import cv2
 import fitz
 import numpy as np
-import pytesseract
-from app.fields import extract_letterhead_company
+from app.document_reader import read_document_identity
 from app.seal_ocr import read_seal, corroborated_name_match, strict_name_match
 
 
@@ -120,46 +119,59 @@ def ring_coverage(
     return matched / 72
 
 
-def detect_stamp(rgb: np.ndarray) -> tuple[float, np.ndarray | None]:
-    """Detect faded circular stamps using both the outer and inner ring.
+def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float, np.ndarray]]:
+    """Return multiple circular-seal candidates using page-relative geometry.
 
-    Scores are heuristic, not calibrated probabilities. A borderline result
-    should be reviewed rather than declared definitely stamp-free.
+    No fixed page size, fixed stamp location or assumed single seal.
     """
     mask = red_mask(rgb)
     height, width = mask.shape
+    short_side = min(height, width)
     circles = cv2.HoughCircles(
         cv2.GaussianBlur(mask, (9, 9), 0),
         cv2.HOUGH_GRADIENT,
         dp=1.4,
-        minDist=max(65, int(width * 0.07)),
+        minDist=max(65, int(short_side * 0.07)),
         param1=80,
         param2=30,
-        minRadius=max(30, int(width * 0.035)),
-        maxRadius=int(width * 0.14),
+        minRadius=max(30, int(short_side * 0.035)),
+        maxRadius=max(25, int(short_side * 0.22)),
     )
     if circles is None:
-        return 0.0, None
-    best_score, best_crop = 0.0, None
+        return []
+    scored = []
     for x, y, radius in np.rint(circles[0]).astype(int):
         outer = ring_coverage(mask, x, y, radius)
         if outer < 0.30:
             continue
         inner = max(
-            ring_coverage(
-                mask, x, y, round(radius * factor), offsets=(-3, 0, 3)
-            )
+            ring_coverage(mask, x, y, round(radius * factor), offsets=(-3, 0, 3))
             for factor in (0.72, 0.78, 0.84)
         )
         score = 0.65 * outer + 0.35 * inner
-        if score <= best_score:
+        if score < 0.35:
             continue
         extent = int(radius * 1.12)
         x0, x1 = max(0, x - extent), min(width, x + extent)
         y0, y1 = max(0, y - extent), min(height, y + extent)
-        best_score = score
-        best_crop = mask[y0:y1, x0:x1]
-    return best_score, best_crop
+        scored.append((score, mask[y0:y1, x0:x1], x, y, radius))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    selected = []
+    for score, crop, x, y, radius in scored:
+        # Discard duplicate Hough rings around the same physical seal.
+        if any((x - px) ** 2 + (y - py) ** 2 < max(radius, pr) ** 2 * 0.5
+               for _, _, px, py, pr in selected):
+            continue
+        selected.append((score, crop, x, y, radius))
+        if len(selected) >= max_candidates:
+            break
+    return [(score, crop) for score, crop, _, _, _ in selected]
+
+
+def detect_stamp(rgb: np.ndarray) -> tuple[float, np.ndarray | None]:
+    """Backward-compatible strongest candidate from one page."""
+    candidates = detect_stamps(rgb, max_candidates=1)
+    return candidates[0] if candidates else (0.0, None)
 
 
 def render_page(page: fitz.Page) -> np.ndarray:
@@ -176,57 +188,61 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                 return Result("REVIEW", "PDF có mật khẩu.")
             if doc.page_count == 0 or doc.page_count > max_pages:
                 return Result("REVIEW", "Số trang PDF không hợp lệ hoặc vượt giới hạn.")
-            best_score, best_mask, best_page = 0.0, None, None
-            first_page = None
+            candidates: list[tuple[float, np.ndarray, int]] = []
             for index, page in enumerate(doc):
                 rgb = render_page(page)
-                if index == 0:
-                    first_page = rgb
-                score, crop = detect_stamp(rgb)
-                if score > best_score:
-                    best_score, best_mask, best_page = score, crop, index + 1
-            if best_score < 0.45 or best_mask is None:
+                for score, crop in detect_stamps(rgb, max_candidates=3):
+                    candidates.append((score, crop, index + 1))
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            if not candidates or candidates[0][0] < 0.45:
                 return Result("FAIL", "Không phát hiện dấu tròn đỏ.")
-            if best_score < 0.68:
-                return Result("REVIEW", "Vùng nghi có dấu, cần kiểm tra lại.", stamp_page=best_page)
-            assert first_page is not None
-            page_text = pytesseract.image_to_string(first_page, lang=ocr_lang, config="--psm 3")
-            company, doc_mst = extract_document_fields(page_text)
+            strong = [item for item in candidates if item[0] >= 0.68][:4]
+            if not strong:
+                return Result("REVIEW", "Vùng nghi có dấu, cần kiểm tra lại.",
+                              stamp_page=candidates[0][2])
+            best_page = strong[0][2]
+            identity = read_document_identity(doc, render_page, extract_document_fields, ocr_lang)
+            if identity.ambiguous:
+                return Result("REVIEW", "Có nhiều tên doanh nghiệp ở phần đầu chứng từ.",
+                              stamp_page=best_page)
+            company, doc_mst = identity.company, identity.mst
             if not company:
-                # Official letters often show the company in a multi-line
-                # upper-left letterhead, without a labeled company-name field.
-                # Crop the issuing entity area so the right-side national
-                # header and unrelated companies in the body cannot interfere.
-                header = first_page[
-                    :int(first_page.shape[0] * 0.18),
-                    :int(first_page.shape[1] * 0.48),
-                ]
-                header_text = pytesseract.image_to_string(
-                    header, lang=ocr_lang, config="--psm 6"
-                )
-                company = extract_letterhead_company(header_text)
-            if not company:
-                return Result(
-                    "REVIEW", "Chưa đọc được tên doanh nghiệp trên chứng từ.",
-                    stamp_page=best_page,
-                )
-            # Every variant reads red ink from ONE selected stamp.
-            evidence = read_seal(best_mask, ocr_lang, tax_code_valid)
-            codes = evidence.high_confidence_msts
-            if doc_mst and len(codes) == 1:
-                stamp_mst = next(iter(codes))
-                if stamp_mst == doc_mst:
-                    return Result("PASS", "MST trên dấu khớp chứng từ.",
-                                  "MST_MATCH", best_page)
+                return Result("REVIEW", "Chưa đọc được tên doanh nghiệp trên chứng từ.",
+                              stamp_page=best_page)
+            # Validate EACH likely seal instead of trusting only the strongest circle.
+            matched_mst: list[int] = []
+            mismatched_mst: list[int] = []
+            matched_name: list[int] = []
+            unresolved = False
+            for _, seal_mask, stamp_page in strong:
+                evidence = read_seal(seal_mask, ocr_lang, tax_code_valid)
+                codes = evidence.high_confidence_msts
+                if len(codes) > 1:
+                    unresolved = True
+                    continue
+                if doc_mst and len(codes) == 1:
+                    seal_mst = next(iter(codes))
+                    if seal_mst == doc_mst:
+                        matched_mst.append(stamp_page)
+                    else:
+                        mismatched_mst.append(stamp_page)
+                    continue
+                if corroborated_name_match(company, evidence):
+                    matched_name.append(stamp_page)
+            # Never use name fallback to ignore a confidently mismatching MST.
+            if mismatched_mst and (matched_mst or matched_name or unresolved):
+                return Result("REVIEW", "Nhiều dấu có thông tin mâu thuẫn.",
+                              stamp_page=mismatched_mst[0])
+            if mismatched_mst:
                 return Result("FAIL", "MST trên dấu khác MST chứng từ.",
-                              stamp_page=best_page)
-            if len(codes) > 1:
-                return Result("REVIEW", "Phát hiện nhiều MST trên dấu.",
-                              stamp_page=best_page)
-            if corroborated_name_match(company, evidence):
+                              stamp_page=mismatched_mst[0])
+            if matched_mst:
+                return Result("PASS", "MST trên dấu khớp chứng từ.",
+                              "MST_MATCH", matched_mst[0])
+            if matched_name and not unresolved:
                 return Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
-                              "NAME_FALLBACK", best_page)
-            return Result("REVIEW", "Tên trên dấu chưa đủ rõ để đối chiếu.",
+                              "NAME_FALLBACK", matched_name[0])
+            return Result("REVIEW", "Chưa đối chiếu chắc thông tin trên dấu.",
                           stamp_page=best_page)
     except (fitz.FileDataError, fitz.EmptyFileError, ValueError):
         return Result("REVIEW", "Không đọc được cấu trúc PDF.")
