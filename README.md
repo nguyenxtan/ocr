@@ -31,11 +31,11 @@ Yêu cầu: Docker Engine + Docker Compose v2, không cần GPU, n8n, database h
 ## Luồng POC
 
 1. Nhận và kiểm tra PDF, mật khẩu, số trang và dung lượng.
-2. PyMuPDF render các trang; OpenCV tìm **vòng dấu đỏ** theo nét hình tròn, không chỉ thấy màu đỏ là kết luận có dấu.
+2. PyMuPDF render **từng trang**; OpenCV nhận cả dấu **đỏ nhạt/đỏ nâu**, xác nhận hình học vòng ngoài và vòng trong. Không lấy chữ đỏ đơn lẻ làm con dấu.
 3. Tesseract OCR trang đầu (trường tên/MST doanh nghiệp); OCR riêng phần nét đỏ trên con dấu.
 4. MST dấu đọc đủ tin cậy và đúng checksum thì so với MST chứng từ. MST mâu thuẫn: **FAIL**, không dùng tên để bỏ qua.
 5. Nếu MST dấu không đọc chắc, dùng RapidFuzz để so khớp tên doanh nghiệp trên dấu với chứng từ (fallback).
-6. Không phát hiện dấu đỏ: **FAIL**. Không đủ thông tin để so khớp: **REVIEW**.
+6. Không phát hiện vòng dấu: **FAIL**. Nếu chỉ thấy vùng nghi dấu hoặc có dấu nhưng không đủ dữ liệu (ví dụ công văn có dấu của cơ quan, không có trường tên doanh nghiệp để đối chiếu): **REVIEW**, kèm trang phát hiện.
 
 Bot chỉ trả hai dòng, ví dụ:
 
@@ -67,6 +67,7 @@ Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 Đã chạy kiểm thử logic (6 bài đạt) và thử trực tiếp 2 PDF mẫu:
 - File scan có dấu: PASS bằng NAME_FALLBACK.
 - File PDF không dấu đỏ: FAIL.
+- Ảnh chụp công văn 4 trang có dấu đỏ nâu ở trang 4: thuật toán mới nhận diện được dấu **trên ảnh chụp**; chưa có PDF gốc để kiểm tra toàn bộ luồng Telegram. Với chứng từ không có trường tên doanh nghiệp, kết quả đối chiếu sẽ là REVIEW, không phải PASS.
 
 **Chưa kiểm thử Docker và kết nối Telegram thực tế**, do chưa có token. Kết quả 2 file không chứng minh độ chính xác tổng thể; cần bộ dữ liệu có/không dấu, dấu mờ, sai MST để benchmark. Không đưa hồ sơ khách hàng hoặc thông tin nhạy cảm vào repo công khai. File tải về nằm trong thư mục tạm, được xóa sau khi xử lý. Log không lưu nội dung PDF.
 
