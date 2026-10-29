@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.analysis import Result, analyze_pdf
@@ -51,7 +51,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await message.reply_text("Chỉ hỗ trợ file PDF.")
         return
     if document.file_size and document.file_size > MAX_PDF_MB * 1024 * 1024:
-        await message.reply_text("⚠️ REVIEW\nPDF vượt giới hạn dung lượng.")
+        await message.reply_text(Result("REVIEW", "PDF vượt giới hạn dung lượng.").telegram_html(), parse_mode=ParseMode.HTML)
         return
     await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
     try:
@@ -60,17 +60,17 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             remote_file = await document.get_file()
             await remote_file.download_to_drive(custom_path=path)
             if path.stat().st_size > MAX_PDF_MB * 1024 * 1024:
-                await message.reply_text("⚠️ REVIEW\nPDF vượt giới hạn dung lượng.")
+                await message.reply_text(Result("REVIEW", "PDF vượt giới hạn dung lượng.").telegram_html(), parse_mode=ParseMode.HTML)
                 return
             with path.open("rb") as f:
                 if f.read(5) != b"%PDF-":
-                    await message.reply_text("⚠️ REVIEW\nFile không đúng định dạng PDF.")
+                    await message.reply_text(Result("REVIEW", "File không đúng định dạng PDF.").telegram_html(), parse_mode=ParseMode.HTML)
                     return
             result = await asyncio.to_thread(analyze_pdf, path, MAX_PAGES, OCR_LANG)
-            await message.reply_text(result.telegram_text())
+            await message.reply_text(result.telegram_html(), parse_mode=ParseMode.HTML)
     except Exception:
         logger.exception("PDF processing failed")
-        await message.reply_text(Result("REVIEW", "Có lỗi khi phân tích PDF.").telegram_text())
+        await message.reply_text(Result("REVIEW", "Có lỗi khi phân tích PDF.").telegram_html(), parse_mode=ParseMode.HTML)
 
 
 async def other_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
