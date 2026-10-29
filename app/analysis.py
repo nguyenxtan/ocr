@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 import re
 import unicodedata
@@ -11,8 +12,8 @@ import cv2
 import fitz
 import numpy as np
 import pytesseract
-from rapidfuzz import fuzz
 from app.fields import extract_letterhead_company
+from app.seal_ocr import read_seal, corroborated_name_match, strict_name_match
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,24 @@ class Result:
     status: str  # PASS | FAIL | REVIEW
     reason: str
     method: str | None = None
+    stamp_page: int | None = None
+
+    def telegram_html(self) -> str:
+        headings = {
+            "PASS": "✅ <b>HỒ SƠ ĐẠT</b>",
+            "FAIL": "❌ <b>KHÔNG ĐẠT</b>",
+            "REVIEW": "⚠️ <b>CẦN KIỂM TRA</b>",
+        }
+        lines = [headings[self.status]]
+        if self.stamp_page is not None:
+            lines.append(f"🔴 Dấu đỏ · Trang {self.stamp_page}")
+        if self.status == "PASS" and self.method == "MST_MATCH":
+            lines.append("🧾 MST trên dấu <b>khớp chứng từ</b>")
+        elif self.status == "PASS" and self.method == "NAME_FALLBACK":
+            lines.append("🏢 Tên doanh nghiệp <b>khớp</b> · Dự phòng")
+        else:
+            lines.append(f"🔎 {escape(self.reason)}")
+        return "\n".join(lines)
 
     def telegram_text(self) -> str:
         symbol = {"PASS": "✅", "FAIL": "❌", "REVIEW": "⚠️"}[self.status]
@@ -63,24 +82,9 @@ def extract_document_fields(text: str) -> tuple[str | None, str | None]:
     return company, mst
 
 
-LEGAL_WORDS = {
-    "CONG", "TY", "CO", "PHAN", "COPHAN", "TNHH", "MTV", "TRACH",
-    "NHIEM", "HUU", "HAN", "DOANH", "NGHIEP", "CTCP", "CP",
-}
-
-
 def name_matches(company: str, stamp_text: str) -> bool:
-    """Conservative token coverage; a vague shared legal form is not enough."""
-    expected = [x for x in fold(company).split() if x not in LEGAL_WORDS and len(x) >= 3]
-    observed = [x for x in fold(stamp_text).split() if x not in LEGAL_WORDS and len(x) >= 3]
-    if not expected or not observed:
-        return False
-    hits = [x for x in expected if max(fuzz.ratio(x, y) for y in observed) >= 88]
-    # Need a distinctive, relatively long token and enough different tokens.
-    has_distinctive = any(len(x) >= 5 for x in hits)
-    if len(expected) == 1:
-        return len(hits) == 1 and len(expected[0]) >= 5
-    return has_distinctive and len(hits) >= 2 and len(hits) / len(expected) >= 0.8
+    """Strict direct comparison; OCR evidence matching is in app.seal_ocr."""
+    return strict_name_match(company, stamp_text)
 
 
 def red_mask(rgb: np.ndarray) -> np.ndarray:
@@ -184,7 +188,7 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
             if best_score < 0.45 or best_mask is None:
                 return Result("FAIL", "Không phát hiện dấu tròn đỏ.")
             if best_score < 0.68:
-                return Result("REVIEW", f"Vùng nghi có dấu ở trang {best_page}, cần kiểm tra.")
+                return Result("REVIEW", "Vùng nghi có dấu, cần kiểm tra lại.", stamp_page=best_page)
             assert first_page is not None
             page_text = pytesseract.image_to_string(first_page, lang=ocr_lang, config="--psm 3")
             company, doc_mst = extract_document_fields(page_text)
@@ -203,32 +207,26 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                 company = extract_letterhead_company(header_text)
             if not company:
                 return Result(
-                    "REVIEW",
-                    f"Có dấu ở trang {best_page}, nhưng chưa đọc được tên doanh nghiệp trên chứng từ.",
+                    "REVIEW", "Chưa đọc được tên doanh nghiệp trên chứng từ.",
+                    stamp_page=best_page,
                 )
-            # OCR only red pixels of the seal, avoiding black text underneath.
-            only_red = cv2.resize(255 - best_mask, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-            stamp_data = pytesseract.image_to_data(
-                only_red, lang=ocr_lang, config="--psm 11", output_type=pytesseract.Output.DICT
-            )
-            words = [(word.strip(), float(conf)) for word, conf in zip(
-                stamp_data["text"], stamp_data["conf"]
-            ) if word.strip()]
-            stamp_text = " ".join(word for word, _ in words)
-            strong_codes = set()
-            for word, confidence in words:
-                digits = re.sub(r"\D", "", word)
-                if confidence >= 80 and tax_code_valid(digits):
-                    strong_codes.add(digits)
-            if doc_mst and len(strong_codes) == 1:
-                stamp_mst = next(iter(strong_codes))
+            # Every variant reads red ink from ONE selected stamp.
+            evidence = read_seal(best_mask, ocr_lang, tax_code_valid)
+            codes = evidence.high_confidence_msts
+            if doc_mst and len(codes) == 1:
+                stamp_mst = next(iter(codes))
                 if stamp_mst == doc_mst:
-                    return Result("PASS", "MST trên dấu khớp chứng từ.", "MST_MATCH")
-                return Result("FAIL", "MST trên dấu không khớp chứng từ.")
-            if len(strong_codes) > 1:
-                return Result("REVIEW", "Có nhiều MST trên dấu; cần kiểm tra.")
-            if name_matches(company, stamp_text):
-                return Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.", "NAME_FALLBACK")
-            return Result("REVIEW", "Có dấu và tên doanh nghiệp, nhưng chưa đọc chắc thông tin trên dấu.")
+                    return Result("PASS", "MST trên dấu khớp chứng từ.",
+                                  "MST_MATCH", best_page)
+                return Result("FAIL", "MST trên dấu khác MST chứng từ.",
+                              stamp_page=best_page)
+            if len(codes) > 1:
+                return Result("REVIEW", "Phát hiện nhiều MST trên dấu.",
+                              stamp_page=best_page)
+            if corroborated_name_match(company, evidence):
+                return Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
+                              "NAME_FALLBACK", best_page)
+            return Result("REVIEW", "Tên trên dấu chưa đủ rõ để đối chiếu.",
+                          stamp_page=best_page)
     except (fitz.FileDataError, fitz.EmptyFileError, ValueError):
         return Result("REVIEW", "Không đọc được cấu trúc PDF.")
