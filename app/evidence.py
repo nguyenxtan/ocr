@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import cv2
-import fitz
+import pymupdf as fitz
 import numpy as np
 
 from app.analysis import Result, detect_stamps, render_page, stamp_fingerprint
