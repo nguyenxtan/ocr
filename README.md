@@ -14,13 +14,18 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-**Cấp quyền:** Sau khi bot khởi động, gõ `/id` trong Telegram để lấy Telegram ID, rồi điền `ALLOWED_USER_IDS=<ID>` trong `.env`. Nếu danh sách này trống, bot **không xử lý bất kỳ PDF nào** (chế độ an toàn). Khởi động lại:
+**Chế độ PUBLIC (mặc định):** Ai nhắn riêng và gửi file PDF cho bot cũng sử dụng được. **Không cần** điền `ALLOWED_USER_IDS`. Với file `.env` đã có từ bản cũ, có thể thêm `BOT_ACCESS_MODE=PUBLIC` để cấu hình tường minh, hoặc cập nhật code và dùng mặc định PUBLIC.
+
+**Chế độ PRIVATE (tùy chọn):** Đặt `BOT_ACCESS_MODE=PRIVATE`, nhắn `/id` để lấy Telegram ID rồi điền `ALLOWED_USER_IDS=1095120130,123456789` (ID minh họa). Danh sách trống trong PRIVATE sẽ chặn tất cả PDF.
+
+Sau khi sửa `.env` hoặc cập nhật code:
 
 ```bash
-docker compose up -d --force-recreate
-# Xem log
+docker compose up -d --build --force-recreate
 docker compose logs -f bot
 ```
+
+Chỉ hỗ trợ tin nhắn riêng, không xử lý PDF trong nhóm Telegram. PUBLIC vẫn giới hạn kích thước file, số trang, thời gian xử lý, số tác vụ đồng thời và giãn cách giữa các lượt gửi. **PUBLIC cho phép người lạ dùng tài nguyên server**, nên theo dõi log/dung lượng khi chia sẻ bot rộng rãi.
 
 Không đưa token, PDF khách hàng, CMND hoặc giấy tờ nội bộ vào repo. Docker dùng container không đặc quyền, read-only, bộ nhớ 2 GB, CPU giới hạn. PDF được tải vào thư mục tạm rồi xóa sau lượt kiểm tra.
 
@@ -63,7 +68,7 @@ Chữ ký số có thể bổ sung dòng `🔏 Chữ ký số: Toàn vẹn · Ch
 | RapidFuzz | So khớp từ tên doanh nghiệp |
 | Poppler `pdfsig` | Kiểm tra chữ ký số PDF |
 
-`.env.example` cung cấp các tham số: bot token, Telegram ID được phép, giới hạn file và trang, thời gian xử lý, bộ nhớ container (trong Compose), số lượt xử lý song song và khoảng cách giữa các lượt gửi.
+`.env.example` cung cấp các tham số: bot token, chế độ PUBLIC/PRIVATE, Telegram ID được phép nếu PRIVATE, giới hạn file và trang, thời gian xử lý, bộ nhớ container (trong Compose), số lượt xử lý song song và khoảng cách giữa các lượt gửi.
 
 **An toàn:** Mỗi PDF chạy trong một process riêng. Nếu quá hạn xử lý thì bot dừng process, trả REVIEW; không để OCR chạy mãi dưới nền. Tesseract được giới hạn một luồng CPU. Bộ đọc PDF giới hạn kích thước trang render. Không lưu PDF hay ảnh con dấu lâu dài, không log nội dung OCR.
 
@@ -101,7 +106,7 @@ Báo cáo gồm accuracy, false-PASS, signer accuracy, P50/P95 thời gian, conf
 **Mặc định:** `docker compose up -d --build` vẫn chạy Tesseract, không cần cài PaddleOCR. Nếu có VPS hoặc Docker Desktop đủ RAM, chạy thêm sidecar (dịch vụ OCR phụ, chỉ kết nối trong mạng Docker):
 
 ```bash
-# Đã điền TELEGRAM_BOT_TOKEN và ALLOWED_USER_IDS trong .env
+# Đã điền TELEGRAM_BOT_TOKEN; với PUBLIC không cần ALLOWED_USER_IDS
 # Bật Tesseract + PP-OCRv6 + SealRecognition; không cần GPU
  docker compose -f compose.yaml -f compose.paddle.yaml up -d --build
  docker compose -f compose.yaml -f compose.paddle.yaml logs -f paddle bot
