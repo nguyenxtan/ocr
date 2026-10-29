@@ -80,3 +80,10 @@ def test_telegram_shows_signer_name_when_no_representative():
                  mst_status="NO_DOC", signer_status="NOT_DECLARED",
                  signer_name="Nguyen Sơn Hai").telegram_html()
     assert "Nguyen Sơn Hai" in msg and "Chưa đối chiếu" in msg
+
+
+def test_telegram_shows_actual_signer_name_when_matched():
+    html = Result("PASS", "stamp ok", "NAME_FALLBACK", 1,
+                  name_match_pct=100, mst_status="UNREADABLE",
+                  signer_status="MATCH", signer_name="Quan Tùng Anh").telegram_html()
+    assert "Quan Tùng Anh" in html and "<b>Khớp</b>" in html
