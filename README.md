@@ -31,10 +31,10 @@ Yêu cầu: Docker Engine + Docker Compose v2, không cần GPU, n8n, database h
 ## Luồng POC
 
 1. Nhận và kiểm tra PDF, mật khẩu, số trang và dung lượng.
-2. PyMuPDF render **từng trang**; OpenCV nhận cả dấu **đỏ nhạt/đỏ nâu**, xác nhận hình học vòng ngoài và vòng trong. Không lấy chữ đỏ đơn lẻ làm con dấu.
-3. OCR trang đầu: ưu tiên trường tên/MST; nếu không có thì đọc **tiêu đề công văn góc trên bên trái**, hỗ trợ tên xuống nhiều dòng. Với con dấu, dùng **5 lượt OCR các vùng cắt nét mực đỏ**, nhấn mạnh chữ ở tâm dấu để giảm nhiễu vòng tròn.
+2. PyMuPDF render **tất cả trang**; OpenCV phát hiện **nhiều dấu tròn đỏ/đỏ nâu**, kiểm tra vòng trong và ngoài theo tỷ lệ kích thước trang. Không chỉ chọn dấu có hình tròn rõ nhất.
+3. Ưu tiên **văn bản PDF** khi có; nếu là scan thì OCR. Tìm tên/MST có nhãn trên **nhiều trang**; nếu thiếu nhãn thì tìm doanh nghiệp ở phần đầu **cột trái, giữa, phải**. Hỗ trợ tên xuống dòng; đối chiếu từng vùng dấu bằng 5 lượt OCR.
 4. MST dấu đọc đủ tin cậy và đúng checksum thì so với MST chứng từ. MST mâu thuẫn: **FAIL**, không dùng tên để bỏ qua.
-5. Nếu MST dấu không đọc chắc, dùng RapidFuzz so khớp **nhiều từ đặc trưng** trong tên công ty; có từ mâu thuẫn được OCR rõ thì không tự PASS.
+5. Nếu MST trên dấu không đọc chắc, fallback tên doanh nghiệp. Với **tên ngắn**, các từ phân biệt phải khớp chính xác, tránh nhầm MINH/VINH; tên dài cho phép lỗi OCR nhỏ nếu có đủ từ khác xác nhận. Nếu nhiều tên công ty hoặc nhiều dấu mâu thuẫn: **REVIEW**.
 6. Không phát hiện vòng dấu: **FAIL**. Nếu chỉ thấy vùng nghi dấu hoặc có dấu nhưng không đủ dữ liệu (ví dụ công văn có dấu của cơ quan, không có trường tên doanh nghiệp để đối chiếu): **REVIEW**, kèm trang phát hiện.
 
 ### Mẫu trả lời Telegram (tối đa 3 dòng khi phát hiện dấu)
@@ -76,7 +76,7 @@ Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết 
 
 Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 
-Đã kiểm thử logic **19 bài đạt** và thử trực tiếp các PDF mẫu:
+Đã chạy **29 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
 - File scan có dấu: PASS bằng NAME_FALLBACK.
 - File PDF không dấu đỏ: FAIL.
 - File công văn TCIS, 2 trang: PASS bằng NAME_FALLBACK, dấu trang 2; trước đó REVIEW do chưa OCR đủ chữ ở giữa dấu.
@@ -84,6 +84,14 @@ Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 - Ảnh chụp công văn 4 trang có dấu đỏ nâu ở trang 4: thuật toán mới nhận diện được dấu **trên ảnh chụp**; chưa có PDF gốc để kiểm tra toàn bộ luồng Telegram. Với chứng từ không có trường tên doanh nghiệp, kết quả đối chiếu sẽ là REVIEW, không phải PASS.
 
 **Chưa kiểm thử Docker và kết nối Telegram thực tế**, do chưa có token. Kết quả 2 file không chứng minh độ chính xác tổng thể; cần bộ dữ liệu có/không dấu, dấu mờ, sai MST để benchmark. Không đưa hồ sơ khách hàng hoặc thông tin nhạy cảm vào repo công khai. File tải về nằm trong thư mục tạm, được xóa sau khi xử lý. Log không lưu nội dung PDF.
+
+## Hardcode và khả năng thích ứng
+
+- **Không hardcode tên/MST công ty vào thuật toán**. TCIS, Cypress và doanh nghiệp giả định chỉ là dữ liệu ở thư mục `tests/`.
+- Nhận diện công văn, biểu mẫu, PDF scan/PDF văn bản, nhiều trang, nhiều con dấu. Nếu không xác định chắc **đúng đơn vị ban hành** hoặc OCR vùng dấu chưa đủ tin cậy thì trả `REVIEW`, không tự suy đoán.
+- Vẫn tồn tại **tham số thuật toán** như vùng tiêu đề khoảng 1/3 trang, sắc đỏ/nâu, kích thước dấu, độ tin cậy OCR và 5 vùng cắt. Đó là ngưỡng xử lý ảnh, **chưa phải mô hình nhận dạng mọi loại con dấu**.
+- POC hiện chủ yếu dành cho **dấu tròn đỏ**; dấu xanh/đen, con dấu không tròn, scan nghiêng mạnh hoặc bố cục lạ cần thêm dữ liệu để kiểm chuẩn. Không dùng tên doanh nghiệp từ chứng từ để tự điền chữ chưa nhìn thấy trên dấu.
+- Giữ thứ tự: `MST_MATCH` → `NAME_FALLBACK` (chỉ nếu MST không đọc rõ) → `REVIEW/FAIL`. MST đọc rõ mà khác nhau không được dùng fallback để lách.
 
 ## Trạng thái
 
