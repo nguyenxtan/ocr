@@ -100,11 +100,19 @@ def corroborated_name_match(company: str, evidence: SealEvidence) -> bool:
     found = set()
     for variant in evidence.variants:
         found.update(x for x in normalize(variant).split() if len(x) >= 3)
-    hits = []
-    for token in expected:
-        threshold = 100 if len(token) <= 3 else 75 if len(token) == 4 else 78
-        if any(fuzz.ratio(token, candidate) >= threshold for candidate in found):
-            hits.append(token)
+    exact_hits = [token for token in expected if token in found]
+    # Short company names need exact distinguishing words.
+    # E.g. MINH and VINH are 75% similar but are different legal identities.
+    if len(expected) <= 3 and len(exact_hits) != len(expected):
+        return False
+    hits = list(exact_hits)
+    if len(expected) >= 5 and len(exact_hits) >= 3:
+        for token in expected:
+            if token in hits:
+                continue
+            threshold = 75 if len(token) == 4 else 85 if len(token) >= 5 else 100
+            if any(fuzz.ratio(token, candidate) >= threshold for candidate in found):
+                hits.append(token)
     # Do not silently accept a clearly recognized extra company-name word.
     # Restrict this guard to high-confidence *central* OCR, excluding ring
     # addresses and the noisy outer lettering.
@@ -113,4 +121,4 @@ def corroborated_name_match(company: str, evidence: SealEvidence) -> bool:
             return False
     coverage = len(hits) / len(expected)
     distinct_long = sum(len(token) >= 4 for token in set(hits))
-    return coverage >= 0.8 and distinct_long >= 1 and len(hits) >= min(3, len(expected))
+    return coverage >= 0.85 and distinct_long >= 1 and len(hits) >= min(3, len(expected))
