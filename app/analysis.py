@@ -165,6 +165,56 @@ def ring_coverage(mask, x, y, radius, offsets=(-8,-4,0,4,8)):
                 break
     return matched / 72
 
+def detect_ellipse_circles(mask: np.ndarray) -> list[tuple[float, np.ndarray, int, int, int]]:
+    """Fallback for distorted scanned circular seals that appear elliptical."""
+    height, width = mask.shape
+    min_radius = max(30, int(min(height, width) * .035))
+    max_radius = max(25, int(min(height, width) * .22))
+    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    scored = []
+    for contour in contours:
+        if len(contour) < 50:
+            continue
+        (x, y), (diameter1, diameter2), angle = cv2.fitEllipse(contour)
+        major, minor = max(diameter1, diameter2), min(diameter1, diameter2)
+        if minor <= 0 or major / minor > 2.0:
+            continue
+        radius = (major + minor) / 4
+        if not min_radius <= radius <= max_radius:
+            continue
+        # Contours must resemble a ring, not a compact red text glyph.
+        contour_length = cv2.arcLength(contour, True)
+        if contour_length < 3.0 * (major + minor) / 2:
+            continue
+        theta = np.linspace(0, 2 * np.pi, 72, endpoint=False)
+        alpha = np.deg2rad(angle)
+        def coverage(factor: float) -> float:
+            count = 0
+            for t in theta:
+                dx = (diameter1 / 2) * factor * np.cos(t)
+                dy = (diameter2 / 2) * factor * np.sin(t)
+                xx = round(x + dx * np.cos(alpha) - dy * np.sin(alpha))
+                yy = round(y + dx * np.sin(alpha) + dy * np.cos(alpha))
+                y0, y1 = max(0, yy - 4), min(height, yy + 5)
+                x0, x1 = max(0, xx - 4), min(width, xx + 5)
+                if x0 < x1 and y0 < y1 and np.any(mask[y0:y1, x0:x1]):
+                    count += 1
+            return count / len(theta)
+        outer = coverage(1)
+        inner = max(coverage(f) for f in (.72, .78, .84))
+        score = .65 * outer + .35 * inner
+        if score < .55:
+            continue
+        extent = round(max(diameter1, diameter2) * .58)
+        x0, x1 = max(0, round(x) - extent), min(width, round(x) + extent)
+        y0, y1 = max(0, round(y) - extent), min(height, round(y) + extent)
+        crop = mask[y0:y1, x0:x1]
+        if crop.size == 0 or cv2.countNonZero(crop) / crop.size > .55:
+            continue
+        scored.append((score, crop, round(x), round(y), round(radius)))
+    return scored
+
+
 def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float, np.ndarray]]:
     """Return multiple candidate circular seals, ordered by geometry evidence.
 
@@ -184,9 +234,9 @@ def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float,
         minRadius=max(30, int(short_side * 0.035)),
         maxRadius=max(25, int(short_side * 0.22)),
     )
-    if circles is None:
-        return []
     scored = []
+    if circles is None:
+        circles = np.empty((1, 0, 3), dtype=np.float32)
     for x, y, radius in np.rint(circles[0]).astype(int):
         outer = ring_coverage(mask, x, y, radius)
         if outer < 0.30:
@@ -202,6 +252,9 @@ def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float,
         x0, x1 = max(0, x - extent), min(width, x + extent)
         y0, y1 = max(0, y - extent), min(height, y + extent)
         scored.append((score, mask[y0:y1, x0:x1], x, y, radius))
+    # Try elliptical rings only if the ordinary circular detector is uncertain.
+    if not scored or max(item[0] for item in scored) < .68:
+        scored.extend(detect_ellipse_circles(mask))
     scored.sort(key=lambda item: item[0], reverse=True)
     selected = []
     for score, crop, x, y, radius in scored:

@@ -26,9 +26,9 @@ Không đưa token, PDF khách hàng, CMND hoặc giấy tờ nội bộ vào re
 
 ## 2. Quy tắc kiểm tra
 
-1. **Con dấu đỏ/nâu:** Tìm hình tròn ở nhiều trang, nhiều vị trí, loại nhiễu chữ đỏ; không thấy dấu thì FAIL, nghi dấu thì REVIEW.
+1. **Con dấu đỏ/nâu:** Tìm hình tròn hoặc hình elip bị méo do scan ở nhiều trang/vị trí, loại nhiễu chữ đỏ; không thấy dấu thì FAIL, nghi dấu thì REVIEW.
 2. **MST:** Đọc MST trên con dấu và MST có nhãn trong chứng từ. Hai MST rõ ràng khác nhau thì FAIL; MST không đọc được **không có nghĩa là sai**.
-3. **Tên doanh nghiệp:** Khi MST không đủ dữ liệu, OCR nét mực của dấu riêng và so với tên công ty trong PDF. Hỗ trợ công văn, biểu mẫu và tên công ty xuống dòng; sử dụng tỷ lệ khớp từ khóa đặc trưng, không phải xác suất nhận dạng.
+3. **Tên doanh nghiệp:** Khi MST không đủ dữ liệu, OCR nét mực của dấu riêng, gồm vùng giữa và chữ vòng ngoài được trải phẳng bằng biến đổi cực, rồi so với tên công ty trong PDF. Hỗ trợ công văn, biểu mẫu và tên công ty xuống dòng; sử dụng tỷ lệ khớp từ khóa đặc trưng, không phải xác suất nhận dạng.
 4. **Tên người ký:** OCR ở vùng chữ ký (tách khỏi trường đại diện). Trùng tên đại diện được khai báo thì MATCH. Khác tên rõ ràng thì FAIL. Chữ viết tay/trang trí hoặc ảnh mờ không đủ căn cứ thì REVIEW. Thiếu trường đại diện được khai báo thì NOT_DECLARED, không tự đoán quyền đại diện.
 5. **Chữ ký số:** Chạy `pdfsig` (Poppler) để kiểm tra chữ ký thực sự nhúng trong PDF, không nhầm ảnh scan dòng chữ “Digitally signed by”. Kiểm tra toàn vẹn mật mã và trạng thái tin cậy chứng thư **riêng biệt**. Chữ ký số không thay thế dấu tròn đỏ nếu tiêu chí nghiệp vụ bắt buộc dấu đỏ.
 
@@ -92,6 +92,6 @@ Báo cáo gồm accuracy, false-PASS, signer accuracy, P50/P95 thời gian, conf
 ## 6. Giới hạn cần biết
 
 - Chữ ký tay viết nét trang trí có thể không đọc chắc. Trả REVIEW là hành vi đúng, không tự điền tên được khai báo vào vị trí ký.
-- Nhận diện con dấu hiện ưu tiên con dấu tròn đỏ/nâu. Dấu xanh/đen, dấu bầu dục hoặc con dấu vỡ nét cần bộ mẫu mở rộng.
+- Nhận diện con dấu hiện ưu tiên dấu tròn đỏ/nâu và dấu tròn bị bóp elip do scan. Dấu xanh/đen, dấu không tròn hoặc con dấu vỡ nét cần bộ mẫu mở rộng.
 - Dữ liệu chứng thư số tin cậy theo môi trường xác minh; không đồng nghĩa người ký có đủ thẩm quyền pháp luật. Phần thẩm quyền chỉ đối chiếu **tên trong hồ sơ**, không tra cứu đăng ký doanh nghiệp hoặc giấy ủy quyền.
 - Không có dịch vụ AI trả phí, không dùng GPU. Nếu cần OCR tên ký viết tay chính xác hơn, phải bổ sung mô hình chuyên biệt và đánh giá riêng.

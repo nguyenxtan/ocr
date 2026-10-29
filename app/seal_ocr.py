@@ -85,6 +85,33 @@ def read_seal(mask: np.ndarray, lang: str, tax_code_valid) -> SealEvidence:
             digits = re.sub(r"\D", "", word)
             if confidence >= 80 and tax_code_valid(digits):
                 codes.add(digits)
+    # Unwrap circular ring lettering into a flat strip. This is a fallback,
+    # not proof of identity; any new words still pass the conservative matcher.
+    if side >= 70:
+        try:
+            polar = cv2.warpPolar(
+                mask, (max(30, round(side * .5)), 720),
+                (float(mid_x), float(mid_y)), side * .5,
+                cv2.WARP_POLAR_LINEAR,
+            )
+            strip = cv2.rotate(polar, cv2.ROTATE_90_CLOCKWISE)
+            # Keep mainly the outer lettering ring, not the center graphic.
+            strip = strip[round(strip.shape[0] * .50):round(strip.shape[0] * .96), :]
+            for flattened in (strip, cv2.rotate(strip, cv2.ROTATE_180)):
+                rows = pytesseract.image_to_data(
+                    255 - flattened, lang=lang, config="--psm 11",
+                    output_type=pytesseract.Output.DICT, timeout=12,
+                )
+                words = [(str(word).strip(), float(conf))
+                         for word, conf in zip(rows["text"], rows["conf"])
+                         if str(word).strip()]
+                variants.append(" ".join(word for word, _ in words))
+                for word, confidence in words:
+                    digits = re.sub(r"\D", "", word)
+                    if confidence >= 85 and tax_code_valid(digits):
+                        codes.add(digits)
+        except cv2.error:
+            pass
     return SealEvidence(tuple(variants), frozenset(codes), frozenset(central_tokens))
 
 
