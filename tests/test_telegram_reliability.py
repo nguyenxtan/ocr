@@ -23,8 +23,14 @@ class FakeDocument:
 
 
 def make_update(user_id: int, *, document=None):
-    msg = SimpleNamespace(chat_id=778, document=document, reply_text=AsyncMock())
-    msg.reply_text.side_effect = lambda *args, **kwargs: SimpleNamespace(edit_text=AsyncMock())
+    statuses = []
+    async def reply(*args, **kwargs):
+        progress = SimpleNamespace(edit_text=AsyncMock())
+        statuses.append(progress)
+        return progress
+    msg = SimpleNamespace(chat_id=778, document=document,
+                          reply_text=AsyncMock(side_effect=reply),
+                          statuses=statuses)
     return SimpleNamespace(effective_user=SimpleNamespace(id=user_id),
                            effective_message=msg), msg
 
@@ -88,7 +94,8 @@ def test_second_pdf_waits_instead_of_immediately_saying_busy(monkeypatch):
         await asyncio.wait_for(asyncio.gather(job1, job2), 3)
         assert len(calls) == 2
         assert bot.active_jobs == {}
-        assert "Mẫu thử thiếu bằng chứng" in first_msg.reply_text.await_args.args[0] or first_msg.reply_text.await_count >= 1
+        assert "Mẫu thử thiếu bằng chứng" in first_msg.statuses[0].edit_text.await_args.args[0]
+        assert "Mẫu thử thiếu bằng chứng" in second_msg.statuses[0].edit_text.await_args.args[0]
     asyncio.run(scenario())
 
 
@@ -116,6 +123,7 @@ def test_stop_cancels_running_handler_and_frees_slot(monkeypatch):
         assert not bot.active_jobs
         assert not bot.semaphore.locked()
         assert "Đã yêu cầu hủy" in stop_message.reply_text.await_args.args[0]
+        assert "Đã hủy xử lý PDF" in msg.statuses[0].edit_text.await_args.args[0]
         assert msg.reply_text.await_count == 1
     asyncio.run(scenario())
 
@@ -165,3 +173,17 @@ def test_both_photo_methods_failing_returns_visible_error(monkeypatch):
         ctx.bot.send_message.assert_awaited_once()
         assert "Không gửi được ảnh" in ctx.bot.send_message.await_args.kwargs["text"]
     asyncio.run(scenario())
+
+
+def test_bootstrap_subscribes_to_button_callbacks(monkeypatch):
+    """The previous bot only requested 'message', so buttons were dead."""
+    fake = SimpleNamespace(add_handler=lambda *args: None, run_polling=AsyncMock())
+    class Builder:
+        def token(self, *_): return self
+        def concurrent_updates(self, *_): return self
+        def build(self): return fake
+    monkeypatch.setattr(bot, "ApplicationBuilder", Builder)
+    monkeypatch.setattr(bot, "validate_config", lambda: None)
+    bot.main()
+    assert "message" in fake.run_polling.call_args.kwargs["allowed_updates"]
+    assert "callback_query" in fake.run_polling.call_args.kwargs["allowed_updates"]
