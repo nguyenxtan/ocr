@@ -24,3 +24,16 @@ def test_real_isolated_worker_accepts_small_pdf(tmp_path):
     outcome=asyncio.run(analyze_isolated(filename,3,'vie+eng',15))
     assert outcome.status=='FAIL'
     assert 'dấu' in outcome.reason
+
+
+def test_real_worker_with_temporary_proof_dir(tmp_path):
+    """Optional evidence mode must preserve OCR result and avoid orphan files."""
+    filename = tmp_path / "blank.pdf"
+    with fitz.open() as document:
+        document.new_page()
+        document.save(filename)
+    outcome = asyncio.run(
+        analyze_isolated(filename, 3, "vie+eng", 15, evidence_dir=tmp_path)
+    )
+    assert outcome.status == "FAIL"
+    assert not list(tmp_path.glob("proof_*.jpg"))
