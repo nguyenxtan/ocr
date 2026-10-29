@@ -2,7 +2,7 @@
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from app import bot
 from app.analysis import Result
@@ -177,7 +177,7 @@ def test_both_photo_methods_failing_returns_visible_error(monkeypatch):
 
 def test_bootstrap_subscribes_to_button_callbacks(monkeypatch):
     """The previous bot only requested 'message', so buttons were dead."""
-    fake = SimpleNamespace(add_handler=lambda *args: None, run_polling=AsyncMock())
+    fake = SimpleNamespace(add_handler=lambda *args: None, run_polling=Mock())
     class Builder:
         def token(self, *_): return self
         def concurrent_updates(self, *_): return self
