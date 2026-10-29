@@ -20,7 +20,7 @@ from app.seal_ocr import read_seal, compare_name, strict_name_match
 from app.signatories import SignerCheck, inspect_signatures
 from app.digital_signatures import inspect_digital_signatures
 from app.ensemble import strengthen_seal
-from app.paddle_gateway import PaddleUnavailable, post_image, endpoint_from_env
+from app.paddle_gateway import PaddleUnavailable, post_image, endpoint_from_env, request_budget
 
 
 @dataclass(frozen=True)
@@ -315,7 +315,8 @@ def check_signer_for_pass(result: Result, doc, ocr_lang: str) -> Result:
 
 def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> Result:
     """Match physical seal fields; report digital PDF signature separately."""
-    result = _analyze_stamp_pdf(path, max_pages, ocr_lang)
+    with request_budget():
+        result = _analyze_stamp_pdf(path, max_pages, ocr_lang)
     signature = inspect_digital_signatures(path)
     if signature.status == "INVALID" and result.status == "PASS":
         result = replace(result, status="REVIEW", reason="Chữ ký số nhúng không toàn vẹn.")
