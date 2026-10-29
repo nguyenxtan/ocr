@@ -126,3 +126,11 @@ def test_gallery_callback_sends_one_album(monkeypatch):
     assert kwargs["chat_id"] == 100
     assert len(kwargs["media"]) == 3
     assert all(item.caption == "Ảnh bằng chứng" for item in kwargs["media"])
+
+
+def test_proof_photo_page_labels():
+    from app.analysis import Result
+    result = Result("PASS", "ok", stamp_page=2, signer_page=4)
+    assert bot.evidence_page_for("proof_seal.jpg", result) == 2
+    assert bot.evidence_page_for("proof_signer.jpg", result) == 4
+    assert bot.evidence_page_for("proof_header.jpg", result) == 1
