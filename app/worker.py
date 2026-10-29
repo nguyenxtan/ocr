@@ -46,7 +46,7 @@ def main() -> None:
         except Exception as error:
             # Photo generation is best effort: never change the OCR decision.
             sys.stderr.write(f"Optional evidence failed: {type(error).__name__}\n")
-    sys.stdout.write(json.dumps(asdict(result), ensure_ascii=False))
+    sys.stdout.write("\nOCR_RESULT_JSON:" + json.dumps(asdict(result), ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 

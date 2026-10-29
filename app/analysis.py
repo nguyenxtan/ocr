@@ -11,7 +11,7 @@ import unicodedata
 import os
 
 import cv2
-import fitz
+import pymupdf as fitz
 import numpy as np
 import pytesseract
 from rapidfuzz import fuzz
@@ -58,9 +58,9 @@ class Result:
                 f" {self.name_match_pct}%" if self.name_match_pct is not None else ""
             )
             lines.append(f"🏢 Tên doanh nghiệp: <b>Khớp{ratio}</b>")
-        elif self.status == "REVIEW" and self.stamp_page is not None and not self.signer_status:
-            lines.append(f"🔎 {escape(self.reason)}")
-        elif self.status == "FAIL" and self.mst_status != "MISMATCH" and self.signer_status != "MISMATCH":
+        # An inconclusive result MUST explain itself, even without a stamp page.
+        # This was why timeout/errors previously rendered only "CẦN KIỂM TRA".
+        if self.status in ("REVIEW", "FAIL"):
             lines.append(f"🔎 {escape(self.reason)}")
 
         mst_messages = {
