@@ -65,6 +65,9 @@ class Result:
         }
         if self.signer_status == "NOT_DECLARED" and self.signer_name:
             lines.append(f"✍️ Người ký: {escape(self.signer_name)} · Chưa đối chiếu")
+        elif self.signer_status in ("MATCH", "MISMATCH") and self.signer_name:
+            result = "Khớp" if self.signer_status == "MATCH" else "Không khớp"
+            lines.append(f"✍️ Người ký: {escape(self.signer_name)} · <b>{result}</b>")
         elif self.signer_status in signer_labels:
             lines.append(signer_labels[self.signer_status])
         return "\n".join(lines)
