@@ -93,7 +93,7 @@ Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết 
 
 Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 
-Đã chạy **47 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
+Đã chạy **48 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
 - File scan Cypress có dấu: con dấu khớp, nhưng tên ký màu đỏ chưa OCR đủ rõ, nên khi bật kiểm tra người ký sẽ **REVIEW**. Tên được khai báo: QUAN TUNG ANH.
 - File PDF không dấu đỏ: FAIL.
 - File công văn TCIS, 2 trang: PASS bằng NAME_FALLBACK, dấu trang 2; trước đó REVIEW do chưa OCR đủ chữ ở giữa dấu. Đọc được tên ký Nguyễn Sơn Hải nhưng không có trường đại diện có thẩm quyền để so khớp.
