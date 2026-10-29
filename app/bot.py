@@ -1,4 +1,4 @@
-"""Private Telegram PDF POC with isolated OCR and concise result messages."""
+"""Telegram PDF OCR with configurable PUBLIC or PRIVATE access."""
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +20,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+ACCESS_MODE = os.getenv("BOT_ACCESS_MODE", "PUBLIC").strip().upper()
 ALLOWED = {int(x.strip()) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip().isdigit()}
 MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "15"))
 MAX_PAGES = int(os.getenv("MAX_PAGES", "10"))
@@ -32,15 +33,21 @@ last_seen: dict[int, float] = {}
 
 
 def is_allowed(update: Update) -> bool:
-    """Fail closed: empty allowlist is never 'open to everyone'."""
-    return bool(update.effective_user and update.effective_user.id in ALLOWED)
+    """PUBLIC allows private-chat users; PRIVATE requires an allowlisted ID."""
+    if not update.effective_user:
+        return False
+    if ACCESS_MODE == "PUBLIC":
+        return True
+    return ACCESS_MODE == "PRIVATE" and update.effective_user.id in ALLOWED
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message:
         await update.effective_message.reply_text(
-            "📄 Gửi file PDF để kiểm tra dấu, MST và người ký.\n"
-            "Dùng /id để xem ID Telegram và cấu hình quyền truy cập."
+            "📄 Gửi PDF để kiểm tra dấu, MST và người ký.\n"
+            + ("🔓 Chế độ PUBLIC: không cần đăng ký Telegram ID."
+               if ACCESS_MODE == "PUBLIC" else
+               "🔒 Chế độ PRIVATE: dùng /id để đăng ký quyền truy cập.")
         )
 
 
@@ -73,6 +80,12 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except asyncio.TimeoutError:
         await message.reply_text("⏳ Bot đang xử lý PDF khác, vui lòng thử lại.")
         return
+    # Bound in-memory cooldown tracking for a publicly accessible bot.
+    if len(last_seen) >= 2000:
+        cutoff = now - max(60, COOLDOWN_SEC)
+        for uid, seen_at in list(last_seen.items()):
+            if seen_at < cutoff:
+                last_seen.pop(uid, None)
     last_seen[user_id] = now
     try:
         await context.bot.send_chat_action(message.chat_id, ChatAction.TYPING)
@@ -107,8 +120,14 @@ async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def validate_config() -> None:
     if not TOKEN or TOKEN == "PASTE_YOUR_TOKEN_HERE":
         raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN trong .env")
-    if not ALLOWED:
-        log.warning("Allowlist empty: /id is available but all PDF processing is disabled")
+    if ACCESS_MODE not in ("PUBLIC", "PRIVATE"):
+        raise RuntimeError("BOT_ACCESS_MODE phải là PUBLIC hoặc PRIVATE")
+    if ACCESS_MODE == "PRIVATE" and not ALLOWED:
+        log.warning("PRIVATE mode with empty ALLOWED_USER_IDS: PDF processing is disabled")
+    if ACCESS_MODE == "PUBLIC":
+        if COOLDOWN_SEC < 3:
+            raise RuntimeError("PUBLIC mode requires USER_COOLDOWN_SEC >= 3")
+        log.warning("PUBLIC mode enabled: any Telegram user can send PDF in private chats")
     if not 1 <= MAX_PDF_MB <= 20 or not 1 <= MAX_PAGES <= 30:
         raise RuntimeError("MAX_PDF_MB phải 1..20 và MAX_PAGES phải 1..30")
     if not 10 <= PROCESS_TIMEOUT_SEC <= 300 or not 1 <= MAX_CONCURRENT <= 3:
@@ -127,7 +146,7 @@ def main() -> None:
     app.add_handler(CommandHandler("id", show_id))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, pdf))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, other))
-    log.info("Starting Telegram PDF OCR bot (private mode)")
+    log.info("Starting Telegram PDF OCR bot (access_mode=%s)", ACCESS_MODE)
     app.run_polling(drop_pending_updates=True, allowed_updates=["message"])
 
 
