@@ -5,6 +5,9 @@ machine-readable proof of a name; low-confidence OCR must remain UNREADABLE.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
+import os
 from dataclasses import dataclass
 from typing import Callable
 import re
@@ -246,17 +249,34 @@ def compare_signer(declared: str | None, signed: str | None,
 
 def inspect_signatures(doc, render_page: Callable,
                       lang: str = "vie+eng") -> SignerCheck:
+    """Run identical page OCR in batches of at most two independent subprocesses.
+
+    PyMuPDF rendering stays on the caller thread. Results are consumed in page
+    order, with the same extraction rules/thresholds as sequential processing.
+    The bounded batches avoid retaining all rendered pages in memory.
+    """
+    workers = int(os.getenv("SIGNER_OCR_WORKERS", "2"))
+    if workers not in (1, 2):
+        raise ValueError("SIGNER_OCR_WORKERS must be 1 or 2")
     declared = None
     candidates = []
-    for page_number, page in enumerate(doc, start=1):
-        image = render_page(page)
-        sparse = ocr_lines(image, lang, 11)
-        if not declared:
-            declared = declared_from_lines(merge_visual_rows(sparse, image.shape[0]))
-        # Signer candidates must come from signature anchors, not declaration fields.
-        signed = signer_from_lines(sparse, image.shape[1], image.shape[0])
-        if signed:
-            candidates.append((signed[1], signed[0], page_number))
+    pages = enumerate(doc, start=1)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        while True:
+            batch = []
+            for page_number, page in islice(pages, workers):
+                image = render_page(page)
+                future = executor.submit(ocr_lines, image, lang, 11)
+                batch.append((page_number, image.shape, future))
+            if not batch:
+                break
+            for page_number, shape, future in batch:
+                sparse = future.result()
+                if not declared:
+                    declared = declared_from_lines(merge_visual_rows(sparse, shape[0]))
+                signed = signer_from_lines(sparse, shape[1], shape[0])
+                if signed:
+                    candidates.append((signed[1], signed[0], page_number))
     if not candidates:
         return compare_signer(declared, None, None)
     confidence, name, page = max(candidates)
