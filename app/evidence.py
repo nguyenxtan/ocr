@@ -12,7 +12,7 @@ import cv2
 import fitz
 import numpy as np
 
-from app.analysis import Result, detect_stamps, render_page
+from app.analysis import Result, detect_stamps, render_page, stamp_fingerprint
 
 
 # Fixed filenames and captions, never supplied by a Telegram user.
@@ -77,6 +77,14 @@ def build_evidence(pdf: Path, result: Result, output_dir: Path) -> list[str]:
         detections = detect_stamps(stamp_page, max_candidates=3, with_boxes=True)
         if not detections:
             return []
+        if result.stamp_fingerprint is not None:
+            detections = [
+                candidate for candidate in detections
+                if stamp_fingerprint(candidate[1]) == result.stamp_fingerprint
+            ]
+            if not detections:
+                # Never show an unrelated stamp as proof for a matched one.
+                return []
         score, _, rect = detections[0]
         x0, y0, x1, y1 = rect
         margin = max(12, int(max(x1 - x0, y1 - y0) * 0.13))
