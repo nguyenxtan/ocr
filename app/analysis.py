@@ -32,6 +32,7 @@ class Result:
     mst_status: str | None = None  # MATCH | MISMATCH | NO_DOC | UNREADABLE | CONFLICT
     signer_status: str | None = None
     signer_name: str | None = None
+    signer_page: int | None = None
     digital_signature: str | None = None
     digital_trusted: bool | None = None
 
@@ -168,7 +169,7 @@ def ring_coverage(mask, x, y, radius, offsets=(-8,-4,0,4,8)):
                 break
     return matched / 72
 
-def detect_ellipse_circles(mask: np.ndarray) -> list[tuple[float, np.ndarray, int, int, int]]:
+def detect_ellipse_circles(mask: np.ndarray) -> list[tuple[float, np.ndarray, int, int, int, tuple[int, int, int, int]]]:
     """Fallback for distorted scanned circular seals that appear elliptical."""
     height, width = mask.shape
     min_radius = max(30, int(min(height, width) * .035))
@@ -214,11 +215,11 @@ def detect_ellipse_circles(mask: np.ndarray) -> list[tuple[float, np.ndarray, in
         crop = mask[y0:y1, x0:x1]
         if crop.size == 0 or cv2.countNonZero(crop) / crop.size > .55:
             continue
-        scored.append((score, crop, round(x), round(y), round(radius)))
+        scored.append((score, crop, round(x), round(y), round(radius), (x0, y0, x1, y1)))
     return scored
 
 
-def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float, np.ndarray]]:
+def detect_stamps(rgb: np.ndarray, max_candidates: int = 3, *, with_boxes: bool = False) -> list[tuple]:
     """Return multiple candidate circular seals, ordered by geometry evidence.
 
     Geometric ratios are relative to the page dimensions so both portrait and
@@ -254,21 +255,23 @@ def detect_stamps(rgb: np.ndarray, max_candidates: int = 3) -> list[tuple[float,
         extent = int(radius * 1.12)
         x0, x1 = max(0, x - extent), min(width, x + extent)
         y0, y1 = max(0, y - extent), min(height, y + extent)
-        scored.append((score, mask[y0:y1, x0:x1], x, y, radius))
+        scored.append((score, mask[y0:y1, x0:x1], x, y, radius, (x0, y0, x1, y1)))
     # Try elliptical rings only if the ordinary circular detector is uncertain.
     if not scored or max(item[0] for item in scored) < .68:
         scored.extend(detect_ellipse_circles(mask))
     scored.sort(key=lambda item: item[0], reverse=True)
     selected = []
-    for score, crop, x, y, radius in scored:
+    for score, crop, x, y, radius, box in scored:
         # Skip duplicate Hough rings around the very same physical seal.
         if any((x - px) ** 2 + (y - py) ** 2 < max(radius, pr) ** 2 * 0.5
-               for _, _, px, py, pr in selected):
+               for _, _, px, py, pr, _ in selected):
             continue
-        selected.append((score, crop, x, y, radius))
+        selected.append((score, crop, x, y, radius, box))
         if len(selected) >= max_candidates:
             break
-    return [(score, crop) for score, crop, _, _, _ in selected]
+    if with_boxes:
+        return [(score, crop, box) for score, crop, _, _, _, box in selected]
+    return [(score, crop) for score, crop, _, _, _, _ in selected]
 
 
 def detect_stamp(rgb):
@@ -294,7 +297,8 @@ def check_signer_for_pass(result: Result, doc, ocr_lang: str) -> Result:
     cross-reference. Never silently mark an unreadable signer as matching.
     """
     signature = inspect_signatures(doc, render_page, ocr_lang)
-    updated = replace(result, signer_status=signature.status, signer_name=signature.signed)
+    updated = replace(result, signer_status=signature.status, signer_name=signature.signed,
+                      signer_page=signature.page)
     if signature.status == "MISMATCH":
         return replace(updated, status="FAIL", reason="Người ký không khớp đại diện khai báo.")
     if signature.status == "UNREADABLE":
