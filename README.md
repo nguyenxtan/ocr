@@ -61,7 +61,7 @@ Chữ ký số có thể bổ sung dòng `🔏 Chữ ký số: Toàn vẹn · Ch
 
 Khi bot tìm được vùng con dấu, bên dưới kết quả sẽ có nút **🔍 Xem bằng chứng**. Bot **không gửi ảnh mặc định**; chỉ gửi khi chính người đã nộp PDF bấm nút.
 
-Các ảnh được tạo trong cùng lượt xử lý gồm: **vùng con dấu**, **vùng ký gần con dấu (có khung đánh dấu vị trí dấu)** và **phần đầu chứng từ để xem thông tin doanh nghiệp**. Đây là ảnh tham khảo để người dùng kiểm tra lại; vùng ký gần dấu không tự chứng minh người ký hay thẩm quyền.
+Các ảnh được tạo trong cùng lượt xử lý gồm: **vùng con dấu**, **khu vực ký tên** và **phần đầu chứng từ**. Khi bấm, Telegram gửi chúng thành **một album ảnh**, không làm dài thông báo kết quả. Khi PDF có nhiều dấu, ảnh được liên kết với **chính vùng dấu đã dùng để đối chiếu**, tránh mở nhầm dấu. Nếu không tìm lại được đúng vùng dấu, bot không hiển thị ảnh sai. Các vùng ảnh chỉ dùng để người dùng kiểm tra lại, không tự chứng minh người ký hay thẩm quyền.
 
 - Chỉ lưu ảnh JPEG thu nhỏ trong **RAM tối đa 10 phút**, không lưu PDF trong cache; file PDF và ảnh tạm trên đĩa bị xóa ngay sau lần xử lý.
 - Mỗi nút thuộc **Telegram ID và cuộc chat** đã gửi hồ sơ; người khác bấm sẽ bị từ chối. Hết hạn hoặc Docker khởi động lại thì cần gửi PDF mới.
