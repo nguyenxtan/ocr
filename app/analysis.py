@@ -12,7 +12,7 @@ import cv2
 import fitz
 import numpy as np
 from app.document_reader import read_document_identity
-from app.seal_ocr import read_seal, corroborated_name_match, strict_name_match
+from app.seal_ocr import read_seal, compare_name, strict_name_match
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,8 @@ class Result:
     reason: str
     method: str | None = None
     stamp_page: int | None = None
+    name_match_pct: int | None = None
+    mst_status: str | None = None
 
     def telegram_html(self) -> str:
         headings = {
@@ -31,12 +33,27 @@ class Result:
         lines = [headings[self.status]]
         if self.stamp_page is not None:
             lines.append(f"🔴 Dấu đỏ · Trang {self.stamp_page}")
-        if self.status == "PASS" and self.method == "MST_MATCH":
-            lines.append("🧾 MST trên dấu <b>khớp chứng từ</b>")
-        elif self.status == "PASS" and self.method == "NAME_FALLBACK":
-            lines.append("🏢 Tên doanh nghiệp <b>khớp</b> · Dự phòng")
-        else:
+        elif self.status == "FAIL":
             lines.append(f"🔎 {escape(self.reason)}")
+            return "\n".join(lines)
+        if self.status == "PASS" and self.method == "NAME_FALLBACK":
+            ratio = f" {self.name_match_pct}%" if self.name_match_pct is not None else ""
+            lines.append(f"🏢 Tên doanh nghiệp: <b>Khớp{ratio}</b>")
+        elif self.status == "REVIEW" and self.stamp_page is not None:
+            lines.append(f"🔎 {escape(self.reason)}")
+        elif self.status == "FAIL" and self.mst_status != "MISMATCH":
+            lines.append(f"🔎 {escape(self.reason)}")
+        mst_messages = {
+            "MATCH": "🧾 MST: <b>Khớp</b>",
+            "MISMATCH": "🧾 MST: <b>Không khớp</b>",
+            "NO_DOC": "🧾 MST: Chưa thấy trên chứng từ",
+            "UNREADABLE": "🧾 MST: Chưa đọc rõ trên dấu",
+            "CONFLICT": "🧾 MST: Có thông tin mâu thuẫn",
+        }
+        if self.mst_status in mst_messages:
+            lines.append(mst_messages[self.mst_status])
+        elif self.status == "PASS" and self.method == "MST_MATCH":
+            lines.append(mst_messages["MATCH"])
         return "\n".join(lines)
 
     def telegram_text(self) -> str:
@@ -212,7 +229,7 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
             # Validate EACH likely seal instead of trusting only the strongest circle.
             matched_mst: list[int] = []
             mismatched_mst: list[int] = []
-            matched_name: list[int] = []
+            matched_name: list[tuple[int, int]] = []
             unresolved = False
             for _, seal_mask, stamp_page in strong:
                 evidence = read_seal(seal_mask, ocr_lang, tax_code_valid)
@@ -227,22 +244,27 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                     else:
                         mismatched_mst.append(stamp_page)
                     continue
-                if corroborated_name_match(company, evidence):
-                    matched_name.append(stamp_page)
-            # Never use name fallback to ignore a confidently mismatching MST.
+                name = compare_name(company, evidence)
+                if name.matched and name.match_pct is not None:
+                    matched_name.append((stamp_page, name.match_pct))
+            # Never confuse an unreadable tax code with a mismatched tax code.
+            mst_unverified = "UNREADABLE" if doc_mst else "NO_DOC"
             if mismatched_mst and (matched_mst or matched_name or unresolved):
                 return Result("REVIEW", "Nhiều dấu có thông tin mâu thuẫn.",
-                              stamp_page=mismatched_mst[0])
+                              stamp_page=mismatched_mst[0], mst_status="CONFLICT")
             if mismatched_mst:
                 return Result("FAIL", "MST trên dấu khác MST chứng từ.",
-                              stamp_page=mismatched_mst[0])
+                              stamp_page=mismatched_mst[0], mst_status="MISMATCH")
             if matched_mst:
                 return Result("PASS", "MST trên dấu khớp chứng từ.",
-                              "MST_MATCH", matched_mst[0])
+                              "MST_MATCH", matched_mst[0], mst_status="MATCH")
             if matched_name and not unresolved:
+                page, pct = max(matched_name, key=lambda m: m[1])
                 return Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
-                              "NAME_FALLBACK", matched_name[0])
+                              "NAME_FALLBACK", page, name_match_pct=pct,
+                              mst_status=mst_unverified)
             return Result("REVIEW", "Chưa đối chiếu chắc thông tin trên dấu.",
-                          stamp_page=best_page)
+                          stamp_page=best_page,
+                          mst_status="CONFLICT" if unresolved else mst_unverified)
     except (fitz.FileDataError, fitz.EmptyFileError, ValueError):
         return Result("REVIEW", "Không đọc được cấu trúc PDF.")

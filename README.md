@@ -37,30 +37,29 @@ Yêu cầu: Docker Engine + Docker Compose v2, không cần GPU, n8n, database h
 5. Nếu MST trên dấu không đọc chắc, fallback tên doanh nghiệp. Với **tên ngắn**, các từ phân biệt phải khớp chính xác, tránh nhầm MINH/VINH; tên dài cho phép lỗi OCR nhỏ nếu có đủ từ khác xác nhận. Nếu nhiều tên công ty hoặc nhiều dấu mâu thuẫn: **REVIEW**.
 6. Không phát hiện vòng dấu: **FAIL**. Nếu chỉ thấy vùng nghi dấu hoặc có dấu nhưng không đủ dữ liệu (ví dụ công văn có dấu của cơ quan, không có trường tên doanh nghiệp để đối chiếu): **REVIEW**, kèm trang phát hiện.
 
-### Mẫu trả lời Telegram (tối đa 3 dòng khi phát hiện dấu)
+### Mẫu phản hồi Telegram (gọn, có tỷ lệ khớp)
 
-**Đạt bằng tên doanh nghiệp:**
+Khi MST không đủ dữ liệu và tên doanh nghiệp khớp:
 
 ```text
 ✅ HỒ SƠ ĐẠT
 🔴 Dấu đỏ · Trang 2
-🏢 Tên doanh nghiệp khớp · Dự phòng
+🏢 Tên doanh nghiệp: Khớp 86%
+🧾 MST: Chưa thấy trên chứng từ
 ```
 
-**Không phát hiện dấu:**
+Nếu MST có trên chứng từ nhưng không đọc chắc được trên dấu:
 
 ```text
-❌ KHÔNG ĐẠT
-🔎 Không phát hiện dấu tròn đỏ.
+✅ HỒ SƠ ĐẠT
+🔴 Dấu đỏ · Trang 1
+🏢 Tên doanh nghiệp: Khớp 100%
+🧾 MST: Chưa đọc rõ trên dấu
 ```
 
-**Cần kiểm tra:**
+Tỷ lệ 86% / 100% là kết quả tính trên các PDF mẫu ở lần thử này, **không phải số hardcode**. Công thức: số **từ đặc trưng** trong tên doanh nghiệp được OCR trên dấu và đối chiếu đạt / tổng số từ đặc trưng của tên trong chứng từ, nhân 100%. Đây là tỷ lệ khớp chữ OCR, **không phải xác suất OCR đúng, xác thực con dấu, hay chất lượng hồ sơ**.
 
-```text
-⚠️ CẦN KIỂM TRA
-🔴 Dấu đỏ · Trang 2
-🔎 Tên trên dấu chưa đủ rõ để đối chiếu.
-```
+Chỉ hiện `MST: Không khớp` khi có hai MST đọc đủ rõ, đúng cấu trúc nhưng khác nhau. Nếu thiếu MST trên chứng từ hoặc không đọc rõ trên dấu, phải thể hiện rõ thay vì suy đoán. Không tự cho PASS bằng tên khi MST đọc rõ nhưng mâu thuẫn.
 
 Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết quả. Nội bộ giữ `MST_MATCH` hoặc `NAME_FALLBACK`. PASS chỉ là **khớp thông tin dấu và chứng từ**, không kết luận giá trị pháp lý, không phân biệt dấu thật/giả. Chưa kiểm tra người ký/chức vụ hoặc xác thực chữ ký số nhúng; chữ ký số không được coi là dấu đỏ vật lý.
 
@@ -76,7 +75,7 @@ Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết 
 
 Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 
-Đã chạy **29 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
+Đã chạy **37 bài kiểm thử pytest đạt trên môi trường thử nghiệm** và thử trực tiếp các PDF mẫu:
 - File scan có dấu: PASS bằng NAME_FALLBACK.
 - File PDF không dấu đỏ: FAIL.
 - File công văn TCIS, 2 trang: PASS bằng NAME_FALLBACK, dấu trang 2; trước đó REVIEW do chưa OCR đủ chữ ở giữa dấu.

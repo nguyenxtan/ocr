@@ -88,37 +88,49 @@ def read_seal(mask: np.ndarray, lang: str, tax_code_valid) -> SealEvidence:
     return SealEvidence(tuple(variants), frozenset(codes), frozenset(central_tokens))
 
 
-def corroborated_name_match(company: str, evidence: SealEvidence) -> bool:
-    """Match substantial distinctive tokens observed on the same seal.
+@dataclass(frozen=True)
+class NameComparison:
+    matched: bool
+    match_pct: int | None
 
-    Fuzzy tolerance only handles OCR glitches (PHAN/PHAP, THONE/THONG).
-    Missing substantive parts or only generic legal words never yield PASS.
+
+def compare_name(company: str, evidence: SealEvidence) -> NameComparison:
+    """Compare distinctive business-name words across stamp OCR variants.
+
+    match_pct is token coverage, NOT model confidence or legal authenticity.
     """
     expected = distinct_tokens(company)
     if len(expected) < 2:
-        return False
+        return NameComparison(False, None)
     found = set()
     for variant in evidence.variants:
         found.update(x for x in normalize(variant).split() if len(x) >= 3)
+    if not found:
+        return NameComparison(False, None)
     exact_hits = [token for token in expected if token in found]
-    # Short company names need exact distinguishing words.
-    # E.g. MINH and VINH are 75% similar but are different legal identities.
-    if len(expected) <= 3 and len(exact_hits) != len(expected):
-        return False
-    hits = list(exact_hits)
-    if len(expected) >= 5 and len(exact_hits) >= 3:
-        for token in expected:
-            if token in hits:
-                continue
-            threshold = 75 if len(token) == 4 else 85 if len(token) >= 5 else 100
-            if any(fuzz.ratio(token, candidate) >= threshold for candidate in found):
-                hits.append(token)
-    # Do not silently accept a clearly recognized extra company-name word.
-    # Restrict this guard to high-confidence *central* OCR, excluding ring
-    # addresses and the noisy outer lettering.
-    for word in evidence.strong_central_tokens - GENERIC:
-        if not any(fuzz.ratio(word, part) >= 88 or word in part for part in expected):
-            return False
+    allowed_fuzzy = len(expected) >= 5 and len(exact_hits) >= 3
+    hits: list[str] = []
+    for token in expected:
+        if token in found:
+            hits.append(token)
+            continue
+        threshold = 75 if len(token) == 4 else 85 if len(token) >= 5 else 100
+        best = max((fuzz.ratio(token, candidate) for candidate in found), default=0)
+        if allowed_fuzzy and best >= threshold:
+            hits.append(token)
+    unexpected_central = any(
+        not any(fuzz.ratio(word, part) >= 88 or word in part for part in expected)
+        for word in evidence.strong_central_tokens - GENERIC
+    )
     coverage = len(hits) / len(expected)
+    match_pct = round(100 * coverage)
     distinct_long = sum(len(token) >= 4 for token in set(hits))
-    return coverage >= 0.85 and distinct_long >= 1 and len(hits) >= min(3, len(expected))
+    matched = (not unexpected_central and coverage >= 0.85
+               and distinct_long >= 1
+               and len(hits) >= min(3, len(expected)))
+    return NameComparison(matched, match_pct)
+
+
+def corroborated_name_match(company: str, evidence: SealEvidence) -> bool:
+    """Backwards-compatible boolean match decision."""
+    return compare_name(company, evidence).matched

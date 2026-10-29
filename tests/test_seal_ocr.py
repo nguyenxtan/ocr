@@ -38,7 +38,7 @@ def test_telegram_html_compact_pass():
                  "NAME_FALLBACK", 2).telegram_html()
     assert "<b>HỒ SƠ ĐẠT</b>" in msg
     assert "Trang 2" in msg
-    assert "Dự phòng" in msg
+    assert "Dự phòng" not in msg
     assert msg.count("\n") == 2
 
 
