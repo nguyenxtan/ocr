@@ -86,6 +86,8 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         for uid, seen_at in list(last_seen.items()):
             if seen_at < cutoff:
                 last_seen.pop(uid, None)
+        if len(last_seen) >= 2000:
+            last_seen.pop(min(last_seen, key=last_seen.get), None)
     last_seen[user_id] = now
     try:
         await context.bot.send_chat_action(message.chat_id, ChatAction.TYPING)
