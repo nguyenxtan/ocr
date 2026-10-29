@@ -98,3 +98,31 @@ def test_expired_callback_shows_alert(monkeypatch):
     ))
     assert answer.await_args.kwargs.get("show_alert") is True
     assert fake_send.await_count == 0
+
+
+def test_gallery_callback_sends_one_album(monkeypatch):
+    cache = ProofCache()
+    token = cache.add(50, 100, (photo(111), photo(222), photo(333)))
+    monkeypatch.setattr(bot, "proof_cache", cache)
+    send_album = AsyncMock()
+    send_single = AsyncMock()
+    answer = AsyncMock()
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=f"ev:{token}",
+            message=SimpleNamespace(chat=SimpleNamespace(id=100)),
+            answer=answer,
+        ),
+        effective_user=SimpleNamespace(id=50),
+    )
+    context = SimpleNamespace(
+        bot=SimpleNamespace(send_media_group=send_album, send_photo=send_single)
+    )
+    asyncio.run(bot.show_evidence(update, context))
+    assert answer.await_count == 1
+    assert send_album.await_count == 1
+    assert send_single.await_count == 0
+    kwargs = send_album.await_args.kwargs
+    assert kwargs["chat_id"] == 100
+    assert len(kwargs["media"]) == 3
+    assert all(item.caption == "Ảnh bằng chứng" for item in kwargs["media"])
