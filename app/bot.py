@@ -85,16 +85,16 @@ async def cancel_job(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.effective_message.reply_text("🛑 Đã yêu cầu hủy PDF của bạn.")
 
 
-async def _finish_status(progress, message, result: Result, markup=None) -> None:
+async def _finish_status(progress, message, result: Result, markup=None):
     """Always show a reason and replace the existing progress bubble."""
     html = result.telegram_html()
     try:
         if progress is not None:
             await progress.edit_text(html, parse_mode=ParseMode.HTML, reply_markup=markup)
-            return
+            return progress
     except Exception as e:
         log.warning("Editing status failed: type=%s", type(e).__name__)
-    await message.reply_text(html, parse_mode=ParseMode.HTML, reply_markup=markup)
+    return await message.reply_text(html, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
 async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -132,12 +132,16 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     last_seen[user_id] = now
     acquired = False
     progress = None
+    verdict_sent = False
+    queued_at = time.monotonic()
+    timing = {}
     try:
         progress_text = ("⏳ Đã nhận PDF · Đang chờ đến lượt..."
                          if position else "🔎 Đang kiểm tra PDF...")
         progress = await message.reply_text(progress_text)
         await asyncio.wait_for(semaphore.acquire(), timeout=QUEUE_WAIT_SEC)
         acquired = True
+        timing["queue_ms"] = round(1000 * (time.monotonic() - queued_at))
         if position:
             try:
                 await progress.edit_text("🔎 Đang kiểm tra PDF...")
@@ -147,8 +151,11 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         photos: tuple[ProofPhoto, ...] = ()
         with TemporaryDirectory(prefix="ocr-pdf-") as folder:
             file_path = Path(folder) / "upload.pdf"
+            download_started = time.monotonic()
             remote_file = await document.get_file()
             await remote_file.download_to_drive(custom_path=file_path)
+            timing["download_ms"] = round(1000 * (time.monotonic() - download_started))
+            analysis_started = time.monotonic()
             if file_path.stat().st_size > MAX_PDF_MB * 1024 * 1024:
                 result = Result("REVIEW", "PDF vượt giới hạn dung lượng.")
             else:
@@ -160,38 +167,53 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     # Main verdict is independent of optional proof rendering.
                     result = await analyze_isolated(file_path, MAX_PAGES, OCR_LANG,
                                                     PROCESS_TIMEOUT_SEC)
-                    if result.stamp_page is not None:
-                        filenames = await build_evidence_isolated(
-                            file_path, result, EVIDENCE_TIMEOUT_SEC)
-                        captions = dict(EVIDENCE_FILES)
-                        photos = tuple(
-                            ProofPhoto(
-                                caption=f"{captions[name]} · Trang {evidence_page_for(name, result)}",
-                                data=(Path(folder) / name).read_bytes())
-                            for name in filenames if name in captions
-                            and (Path(folder) / name).is_file()
-                        )
+            timing["ocr_ms"] = round(1000 * (time.monotonic() - analysis_started))
+            # Publish the full verdict before optional proof JPEGs. A failed or
+            # cancelled proof stage must never turn a completed result into REVIEW.
+            result_message = await _finish_status(progress, message, result)
+            verdict_sent = True
+            timing["verdict_ms"] = round(1000 * (time.monotonic() - queued_at))
+            proof_started = time.monotonic()
+            if result.stamp_page is not None:
+                try:
+                    filenames = await build_evidence_isolated(
+                        file_path, result, EVIDENCE_TIMEOUT_SEC)
+                    captions = dict(EVIDENCE_FILES)
+                    photos = tuple(
+                        ProofPhoto(
+                            caption=f"{captions[name]} · Trang {evidence_page_for(name, result)}",
+                            data=(Path(folder) / name).read_bytes())
+                        for name in filenames if name in captions
+                        and (Path(folder) / name).is_file()
+                    )
+                except Exception as error:
+                    log.warning("Optional proof failed: error_type=%s", type(error).__name__)
+            timing["proof_ms"] = round(1000 * (time.monotonic() - proof_started))
 
-        reply_markup = None
         if photos:
             token = proof_cache.add(user_id, message.chat_id, photos)
             if token:
-                reply_markup = InlineKeyboardMarkup([[
+                markup = InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔍 Xem bằng chứng", callback_data=f"ev:{token}")
                 ]])
-        await _finish_status(progress, message, result, reply_markup)
-        log.info("PDF status=%s, stamp_page=%s, signer=%s, proof_count=%d",
-                 result.status, result.stamp_page, result.signer_status, len(photos))
+                try:
+                    await result_message.edit_reply_markup(reply_markup=markup)
+                except Exception as error:
+                    log.warning("Attaching proof button failed: error_type=%s", type(error).__name__)
+        # Numeric stage timings only: no names, PDF text, IDs, tokens or paths.
+        log.info("PDF timing_ms=%s status=%s proof_count=%d", timing, result.status, len(photos))
     except asyncio.TimeoutError:
         await _finish_status(progress, message,
                              Result("REVIEW", "Hàng đợi quá lâu. Gửi lại PDF sau."))
     except asyncio.CancelledError:
-        await _finish_status(progress, message,
-                             Result("REVIEW", "Đã hủy xử lý PDF theo yêu cầu."))
+        if not verdict_sent:
+            await _finish_status(progress, message,
+                                 Result("REVIEW", "Đã hủy xử lý PDF theo yêu cầu."))
     except Exception as e:
         log.error("PDF processing failed: error_type=%s", type(e).__name__)
-        await _finish_status(progress, message,
-                             Result("REVIEW", "Không xử lý được PDF. Hãy thử lại."))
+        if not verdict_sent:
+            await _finish_status(progress, message,
+                                 Result("REVIEW", "Không xử lý được PDF. Hãy thử lại."))
     finally:
         if acquired:
             semaphore.release()
@@ -268,6 +290,10 @@ def validate_config() -> None:
         raise RuntimeError("PROCESS_TIMEOUT_SEC phải 10..300, MAX_CONCURRENT_PDFS phải 1..3")
     if not re.fullmatch(r"[a-z]{3}(\+[a-z]{3}){0,3}", OCR_LANG):
         raise RuntimeError("OCR_LANG không hợp lệ")
+    if not 0 <= float(os.getenv("PADDLE_BUDGET_SEC", "8")) <= 60:
+        raise RuntimeError("PADDLE_BUDGET_SEC phải 0..60")
+    if int(os.getenv("SIGNER_OCR_WORKERS", "2")) not in (1, 2):
+        raise RuntimeError("SIGNER_OCR_WORKERS phải là 1 hoặc 2")
     mode = os.getenv("OCR_ENGINE", "tesseract").lower()
     if mode not in ("tesseract", "ensemble"):
         raise RuntimeError("OCR_ENGINE phải là tesseract hoặc ensemble")
