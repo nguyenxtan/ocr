@@ -114,9 +114,11 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     )
                     # Only JPEG bytes remain after TemporaryDirectory removes the PDF.
                     photos = tuple(
-                        ProofPhoto(caption=f"{caption} · Trang "
-                                   f"{1 if name == 'proof_header.jpg' else result.stamp_page}",
-                                   data=(Path(folder) / name).read_bytes())
+                        ProofPhoto(
+                            caption=f"{caption} · Trang "
+                                    f"{1 if name == 'proof_header.jpg' else (result.signer_page or result.stamp_page) if name == 'proof_signer.jpg' else result.stamp_page}",
+                            data=(Path(folder) / name).read_bytes(),
+                        )
                         for name, caption in EVIDENCE_FILES
                         if (Path(folder) / name).is_file()
                     )
