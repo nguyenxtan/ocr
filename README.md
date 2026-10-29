@@ -76,7 +76,7 @@ Phản hồi thật dùng Telegram HTML để in đậm trạng thái và kết 
 
 Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
 
-Đã kiểm thử logic **17 bài đạt** và thử trực tiếp các PDF mẫu:
+Đã kiểm thử logic **19 bài đạt** và thử trực tiếp các PDF mẫu:
 - File scan có dấu: PASS bằng NAME_FALLBACK.
 - File PDF không dấu đỏ: FAIL.
 - File công văn TCIS, 2 trang: PASS bằng NAME_FALLBACK, dấu trang 2; trước đó REVIEW do chưa OCR đủ chữ ở giữa dấu.
