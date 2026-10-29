@@ -5,6 +5,10 @@ No internet API, no document logging, and no silent external OCR fallback.
 from __future__ import annotations
 
 import json
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 import os
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -20,6 +24,58 @@ class PaddleUnavailable(Exception):
     """Optional OCR engine offline, slow, or malformed response."""
 
 
+@dataclass
+class _RequestBudget:
+    remaining: float
+    unavailable: bool = False
+
+
+_budget: ContextVar[_RequestBudget | None] = ContextVar("paddle_request_budget", default=None)
+
+
+@contextmanager
+def request_budget():
+    """Bound optional remote OCR per PDF, resetting on the next document.
+
+    Counts only time inside sidecar calls, not intervening local OCR. Never
+    caches document bytes or shares failure state between users/documents.
+    """
+    seconds = float(os.getenv("PADDLE_BUDGET_SEC", "8"))
+    if not 0 <= seconds <= 60:
+        raise ValueError("PADDLE_BUDGET_SEC must be between 0 and 60")
+    token = _budget.set(_RequestBudget(seconds))
+    try:
+        yield
+    finally:
+        _budget.reset(token)
+
+
+def post_image(rgb: np.ndarray, mode: str, *, timeout_s: float | None = None) -> list[OCRLine]:
+    budget = _budget.get()
+    seconds = timeout_s if timeout_s is not None else float(os.getenv("PADDLE_TIMEOUT_SEC", "18"))
+    if seconds <= 0:
+        raise ValueError("Paddle timeout must be positive")
+    if budget is not None:
+        if budget.unavailable or budget.remaining <= 0:
+            raise PaddleUnavailable("Paddle budget exhausted or service unavailable for this PDF")
+        seconds = min(seconds, budget.remaining)
+    started = time.monotonic()
+    try:
+        result = _post_image(rgb, mode, timeout_s=seconds)
+        # Socket timeouts can apply to individual operations. Do not accept a
+        # late response as if it were within the optional processing budget.
+        if budget is not None and time.monotonic() - started > seconds:
+            raise PaddleUnavailable("Paddle request exceeded its remaining budget")
+        return result
+    except PaddleUnavailable:
+        if budget is not None:
+            budget.unavailable = True
+        raise
+    finally:
+        if budget is not None:
+            budget.remaining = max(0.0, budget.remaining - (time.monotonic() - started))
+
+
 def endpoint_from_env() -> str | None:
     endpoint = os.environ.get("PADDLE_ENDPOINT", "").strip().rstrip("/")
     if not endpoint:
@@ -33,7 +89,7 @@ def endpoint_from_env() -> str | None:
     return endpoint
 
 
-def post_image(rgb: np.ndarray, mode: str, *, timeout_s: float | None = None) -> list[OCRLine]:
+def _post_image(rgb: np.ndarray, mode: str, *, timeout_s: float | None = None) -> list[OCRLine]:
     endpoint = endpoint_from_env()
     if not endpoint:
         raise PaddleUnavailable("Paddle service disabled")
