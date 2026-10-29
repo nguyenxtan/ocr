@@ -74,7 +74,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Bộ kiểm thử chứa ca dương tính, ca âm tính, các tên công ty gần giống, MST mâu thuẫn, nhiều dấu, tên ký không đọc rõ, chữ ký số, xử lý tài nguyên, timeout, path traversal. CI chạy unit tests và build Docker image.
+Bộ kiểm thử chứa ca dương tính, ca âm tính, các tên công ty gần giống, MST mâu thuẫn, nhiều dấu, tên ký không đọc rõ, chữ ký số, xử lý tài nguyên, timeout, path traversal. CI chạy unit tests và build Docker image mặc định (Tesseract). Image PaddleOCR tùy chọn phải được kiểm tra thủ công sau lần tải trọng số đầu tiên.
 
 Đo độ chính xác trên các PDF **thực tế**, không commit file riêng tư, bằng manifest JSON Lines `labels.jsonl`:
 
@@ -95,3 +95,40 @@ Báo cáo gồm accuracy, false-PASS, signer accuracy, P50/P95 thời gian, conf
 - Nhận diện con dấu hiện ưu tiên dấu tròn đỏ/nâu và dấu tròn bị bóp elip do scan. Dấu xanh/đen, dấu không tròn hoặc con dấu vỡ nét cần bộ mẫu mở rộng.
 - Dữ liệu chứng thư số tin cậy theo môi trường xác minh; không đồng nghĩa người ký có đủ thẩm quyền pháp luật. Phần thẩm quyền chỉ đối chiếu **tên trong hồ sơ**, không tra cứu đăng ký doanh nghiệp hoặc giấy ủy quyền.
 - Không có dịch vụ AI trả phí, không dùng GPU. Nếu cần OCR tên ký viết tay chính xác hơn, phải bổ sung mô hình chuyên biệt và đánh giá riêng.
+
+## 7. PaddleOCR nâng cao (tùy chọn)
+
+**Mặc định:** `docker compose up -d --build` vẫn chạy Tesseract, không cần cài PaddleOCR. Nếu có VPS hoặc Docker Desktop đủ RAM, chạy thêm sidecar (dịch vụ OCR phụ, chỉ kết nối trong mạng Docker):
+
+```bash
+# Đã điền TELEGRAM_BOT_TOKEN và ALLOWED_USER_IDS trong .env
+# Bật Tesseract + PP-OCRv6 + SealRecognition; không cần GPU
+ docker compose -f compose.yaml -f compose.paddle.yaml up -d --build
+ docker compose -f compose.yaml -f compose.paddle.yaml logs -f paddle bot
+```
+
+Lần khởi động đầu tiên **Paddle tải bộ trọng số model từ nguồn công khai** vào Docker volume `paddle_models`; có thể lâu tùy mạng. **Nội dung PDF không được tải lên dịch vụ AI đám mây**: bot gửi **ảnh vùng con dấu** cho sidecar qua mạng Docker riêng. Không publish port 8877 ra Internet. `paddle` dùng Python 3.11, PaddlePaddle 3.2.0, PaddleOCR 3.7.0; giới hạn 6 GB RAM/3 CPU. Chế độ nâng cao không phù hợp VPS RAM quá nhỏ.
+
+- **PP-OCRv6** đọc lại vùng con dấu và phần tiêu đề chứng từ khi Tesseract thiếu chữ.
+- **SealRecognition** thử nhận dạng chữ cong trên vòng dấu. Nếu pipeline chuyên biệt không sẵn sàng, bot vẫn xử lý bằng Tesseract/PP-OCRv6.
+- **OCR Ensemble (đối chiếu nhiều bộ nhận dạng)** chỉ tăng mức tin cậy khi có bằng chứng độc lập. Hai pipeline Paddle có thể chia sẻ mô hình nhận dạng, vì vậy **chúng đồng thuận nhưng Tesseract không có bằng chứng vẫn không đủ tự PASS**.
+- Một MST rõ ràng mâu thuẫn khiến kết quả cần REVIEW/FAIL, tuyệt đối không dùng tên công ty để bỏ qua.
+- Khi sidecar ngừng hoạt động, bot tự giữ kết quả Tesseract hiện tại; **không gửi PDF ra API bên ngoài**.
+
+Tắt chế độ nâng cao, dùng lại cấu hình mặc định:
+
+```bash
+ docker compose -f compose.yaml -f compose.paddle.yaml down
+ docker compose up -d --build
+```
+
+### Xác minh sidecar
+
+```bash
+# Kiểm tra tình trạng model, không cần mở port ra host
+ docker compose -f compose.yaml -f compose.paddle.yaml exec paddle \
+   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8877/health').read().decode())"
+```
+
+Kỳ vọng `general=true`, `seal=true` nếu cả hai pipeline tải được. Nếu `seal=false`, phần đọc dấu chuyên biệt chưa hoạt động. **Các bài unit test mô phỏng kết quả AI**, chưa thay thế lần chạy mô hình thật trong Docker và benchmark PDF thực tế.
+

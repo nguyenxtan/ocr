@@ -115,6 +115,9 @@ def validate_config() -> None:
         raise RuntimeError("PROCESS_TIMEOUT_SEC phải 10..300, MAX_CONCURRENT_PDFS phải 1..3")
     if not re.fullmatch(r"[a-z]{3}(\+[a-z]{3}){0,3}", OCR_LANG):
         raise RuntimeError("OCR_LANG không hợp lệ")
+    mode = os.getenv("OCR_ENGINE", "tesseract").lower()
+    if mode not in ("tesseract", "ensemble"):
+        raise RuntimeError("OCR_ENGINE phải là tesseract hoặc ensemble")
 
 
 def main() -> None:

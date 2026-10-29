@@ -1,0 +1,34 @@
+# Opt-in upgrade: docker compose -f compose.yaml -f compose.paddle.yaml up -d --build
+services:
+  bot:
+    environment:
+      OCR_ENGINE: ensemble
+      PADDLE_ENDPOINT: http://paddle:8877
+      PADDLE_TIMEOUT_SEC: "18"
+      PROCESS_TIMEOUT_SEC: "180"
+      WORKER_CPU_SECONDS: "170"
+    depends_on:
+      - paddle
+  paddle:
+    build:
+      context: .
+      dockerfile: Dockerfile.paddle
+    restart: unless-stopped
+    read_only: true
+    init: true
+    mem_limit: 6g
+    cpus: 3.0
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    volumes:
+      - paddle_models:/models
+    environment:
+      PADDLE_PDX_MODEL_SOURCE: BOS
+      PADDLE_PDX_CACHE_HOME: /models
+    expose:
+      - "8877"
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  paddle_models:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable
+from app.paddle_contract import OCRLine
 
 import numpy as np
 import pytesseract
@@ -52,6 +53,7 @@ def read_document_identity(
     render_page: Callable,
     extract_fields: Callable[[str], tuple[str | None, str | None]],
     lang: str = "vie+eng",
+    remote_general: Callable[[np.ndarray], list[OCRLine]] | None = None,
 ) -> DocumentIdentity:
     """Prioritize labeled form fields, then an unambiguous company letterhead.
 
@@ -85,4 +87,15 @@ def read_document_identity(
             if name:
                 possibilities.append(name)
         header_company, header_ambiguous = choose_company(possibilities)
+        if not header_company and not header_ambiguous and remote_general is not None:
+            # Retry only upper-page zones, so body references cannot become
+            # the purported issuer. Do not transfer declared names to seal OCR.
+            remote_candidates = []
+            for region in header_regions(rgb):
+                text = "\n".join(x.text for x in remote_general(region)
+                                   if x.score >= .82)
+                company_name = extract_letterhead_company(text)
+                if company_name:
+                    remote_candidates.append(company_name)
+            header_company, header_ambiguous = choose_company(remote_candidates)
     return DocumentIdentity(header_company, mst, header_ambiguous)

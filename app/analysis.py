@@ -7,6 +7,7 @@ from html import escape
 from pathlib import Path
 import re
 import unicodedata
+import os
 
 import cv2
 import fitz
@@ -17,6 +18,8 @@ from app.document_reader import read_document_identity
 from app.seal_ocr import read_seal, compare_name, strict_name_match
 from app.signatories import SignerCheck, inspect_signatures
 from app.digital_signatures import inspect_digital_signatures
+from app.ensemble import strengthen_seal
+from app.paddle_gateway import PaddleUnavailable, post_image, endpoint_from_env
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,7 @@ class Result:
                 lines.append("🔏 Chữ ký số: Có · Không thay thế dấu đỏ")
             return "\n".join(lines)
 
-        if self.method == "NAME_FALLBACK":
+        if self.method in ("NAME_FALLBACK", "NAME_ENSEMBLE"):
             ratio = (
                 f" {self.name_match_pct}%" if self.name_match_pct is not None else ""
             )
@@ -331,7 +334,18 @@ def _analyze_stamp_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng
                 return Result("REVIEW", "Vùng nghi có dấu, cần kiểm tra lại.",
                               stamp_page=candidates[0][2])
             best_page = strong[0][2]
-            identity = read_document_identity(doc, render_page, extract_document_fields, ocr_lang)
+            engine = os.getenv("OCR_ENGINE", "tesseract").lower()
+            enable_paddle = engine == "ensemble" and endpoint_from_env() is not None
+            def remote_general(region):
+                try:
+                    return post_image(region, "general")
+                except PaddleUnavailable:
+                    return []
+            if enable_paddle:
+                identity = read_document_identity(doc, render_page, extract_document_fields,
+                                                  ocr_lang, remote_general=remote_general)
+            else:
+                identity = read_document_identity(doc, render_page, extract_document_fields, ocr_lang)
             if identity.ambiguous:
                 return Result("REVIEW", "Có nhiều tên doanh nghiệp ở phần đầu chứng từ.", stamp_page=best_page)
             company, doc_mst = identity.company, identity.mst
@@ -341,11 +355,24 @@ def _analyze_stamp_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng
             # circle is the one identifying the issuing company.
             matched_mst: list[int] = []
             mismatched_mst: list[int] = []
-            matched_name: list[tuple[int, int]] = []
+            matched_name: list[tuple[int, int, str]] = []
             unresolved = False
-            for _, seal_mask, stamp_page in strong:
+            for index, (_, seal_mask, stamp_page) in enumerate(strong):
                 evidence = read_seal(seal_mask, ocr_lang, tax_code_valid)
-                codes = evidence.high_confidence_msts
+                name_method = "NAME_FALLBACK"
+                if enable_paddle and index < 2:
+                    crosscheck = strengthen_seal(company, evidence, seal_mask, tax_code_valid,
+                                                 document_mst=doc_mst)
+                    codes = crosscheck.msts
+                    match = crosscheck.name
+                    if crosscheck.ambiguous:
+                        unresolved = True
+                        continue
+                    if crosscheck.note == "NAME_ENSEMBLE":
+                        name_method = "NAME_ENSEMBLE"
+                else:
+                    codes = evidence.high_confidence_msts
+                    match = compare_name(company, evidence)
                 if len(codes) > 1:
                     unresolved = True
                     continue
@@ -356,9 +383,8 @@ def _analyze_stamp_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng
                     else:
                         mismatched_mst.append(stamp_page)
                     continue
-                match = compare_name(company, evidence)
                 if match.matched and match.match_pct is not None:
-                    matched_name.append((stamp_page, match.match_pct))
+                    matched_name.append((stamp_page, match.match_pct, name_method))
             # Do not treat an unreadable MST as a mismatch.
             mst_unverified = "UNREADABLE" if doc_mst else "NO_DOC"
             if mismatched_mst and (matched_mst or matched_name or unresolved):
@@ -372,9 +398,9 @@ def _analyze_stamp_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng
                                 "MST_MATCH", matched_mst[0], mst_status="MATCH")
                 return check_signer_for_pass(result, doc, ocr_lang)
             if matched_name and not unresolved:
-                page, match_pct = max(matched_name, key=lambda m: m[1])
+                page, match_pct, method = max(matched_name, key=lambda m: m[1])
                 result = Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
-                                "NAME_FALLBACK", page,
+                                method, page,
                                 name_match_pct=match_pct, mst_status=mst_unverified)
                 return check_signer_for_pass(result, doc, ocr_lang)
             return Result("REVIEW", "Chưa đối chiếu chắc thông tin trên dấu.",
