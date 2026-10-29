@@ -83,19 +83,30 @@ def name_matches(company: str, stamp_text: str) -> bool:
 
 
 def red_mask(rgb: np.ndarray) -> np.ndarray:
+    """Capture faded red/brown stamp ink, not only saturated bright red.
+
+    Scan compression and printer ink often lower saturation considerably.
+    Geometry checks below distinguish circular seals from ordinary red text.
+    """
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     return cv2.bitwise_or(
-        cv2.inRange(hsv, (0, 75, 40), (12, 255, 255)),
-        cv2.inRange(hsv, (168, 75, 40), (180, 255, 255)),
+        cv2.inRange(hsv, (0, 30, 40), (24, 255, 255)),
+        cv2.inRange(hsv, (164, 30, 40), (180, 255, 255)),
     )
 
 
-def ring_coverage(mask: np.ndarray, x: int, y: int, radius: int) -> float:
-    """Fraction of angular sectors showing red pixels on a circle's rim."""
+def ring_coverage(
+    mask: np.ndarray,
+    x: int,
+    y: int,
+    radius: int,
+    offsets: tuple[int, ...] = (-8, -4, 0, 4, 8),
+) -> float:
+    """Fraction of angular sectors supported by red/brown pixels on the rim."""
     height, width = mask.shape
     matched = 0
     for theta in np.linspace(0, 2 * np.pi, 72, endpoint=False):
-        for offset in (-8, -4, 0, 4, 8):
+        for offset in offsets:
             xx = round(x + (radius + offset) * np.cos(theta))
             yy = round(y + (radius + offset) * np.sin(theta))
             if 0 <= xx < width and 0 <= yy < height and mask[yy, xx]:
@@ -105,7 +116,11 @@ def ring_coverage(mask: np.ndarray, x: int, y: int, radius: int) -> float:
 
 
 def detect_stamp(rgb: np.ndarray) -> tuple[float, np.ndarray | None]:
-    """Find a mostly complete red circular seal, not just red letters."""
+    """Detect faded circular stamps using both the outer and inner ring.
+
+    Scores are heuristic, not calibrated probabilities. A borderline result
+    should be reviewed rather than declared definitely stamp-free.
+    """
     mask = red_mask(rgb)
     height, width = mask.shape
     circles = cv2.HoughCircles(
@@ -122,7 +137,16 @@ def detect_stamp(rgb: np.ndarray) -> tuple[float, np.ndarray | None]:
         return 0.0, None
     best_score, best_crop = 0.0, None
     for x, y, radius in np.rint(circles[0]).astype(int):
-        score = ring_coverage(mask, x, y, radius)
+        outer = ring_coverage(mask, x, y, radius)
+        if outer < 0.30:
+            continue
+        inner = max(
+            ring_coverage(
+                mask, x, y, round(radius * factor), offsets=(-3, 0, 3)
+            )
+            for factor in (0.72, 0.78, 0.84)
+        )
+        score = 0.65 * outer + 0.35 * inner
         if score <= best_score:
             continue
         extent = int(radius * 1.12)
@@ -147,7 +171,7 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                 return Result("REVIEW", "PDF có mật khẩu.")
             if doc.page_count == 0 or doc.page_count > max_pages:
                 return Result("REVIEW", "Số trang PDF không hợp lệ hoặc vượt giới hạn.")
-            best_score, best_mask = 0.0, None
+            best_score, best_mask, best_page = 0.0, None, None
             first_page = None
             for index, page in enumerate(doc):
                 rgb = render_page(page)
@@ -155,14 +179,16 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                     first_page = rgb
                 score, crop = detect_stamp(rgb)
                 if score > best_score:
-                    best_score, best_mask = score, crop
-            if best_score < 0.65 or best_mask is None:
+                    best_score, best_mask, best_page = score, crop, index + 1
+            if best_score < 0.45 or best_mask is None:
                 return Result("FAIL", "Không phát hiện dấu tròn đỏ.")
+            if best_score < 0.68:
+                return Result("REVIEW", f"Vùng nghi có dấu ở trang {best_page}, cần kiểm tra.")
             assert first_page is not None
             page_text = pytesseract.image_to_string(first_page, lang=ocr_lang, config="--psm 3")
             company, doc_mst = extract_document_fields(page_text)
             if not company:
-                return Result("REVIEW", "Chưa đọc chắc tên doanh nghiệp trên chứng từ.")
+                return Result("REVIEW", f"Có dấu ở trang {best_page}, nhưng thiếu tên doanh nghiệp để đối chiếu.")
             # OCR only red pixels of the seal, avoiding black text underneath.
             only_red = cv2.resize(255 - best_mask, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
             stamp_data = pytesseract.image_to_data(
