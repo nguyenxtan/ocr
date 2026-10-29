@@ -11,7 +11,7 @@ import unicodedata
 import os
 
 import cv2
-import fitz
+import pymupdf as fitz
 import numpy as np
 import pytesseract
 from rapidfuzz import fuzz
