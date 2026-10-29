@@ -1,82 +1,75 @@
 # OCR PDF Verification Bot (POC)
 
-Bot Telegram kiểm tra, trích xuất và **so khớp nội dung chứng từ PDF**. Repo hiện lưu đặc tả POC, **chưa có mã nguồn triển khai**.
+Bot Telegram **chỉ nhận PDF**, trả **PASS / FAIL / REVIEW** cùng một dòng lý do. Đây là bản thử nghiệm, chưa được nghiệm thu độ chính xác OCR trên nhiều mẫu.
 
-## Phạm vi
+## Chạy bằng Docker
 
-- Chỉ nhận **PDF**, gồm PDF scan, PDF có lớp văn bản và PDF có chữ ký số.
-- Phát hiện dấu tròn doanh nghiệp; trích xuất **MST** và **tên doanh nghiệp** trên dấu.
-- So khớp với tên và MST khai báo trong chứng từ.
-- Đối chiếu tên/chức vụ tại vị trí ký với thông tin người đại diện được khai báo trên chứng từ, nếu có đủ dữ liệu.
-- Nhận diện chữ ký số nhúng **riêng biệt** với hình con dấu trên giấy.
+Yêu cầu: Docker Engine + Docker Compose v2, không cần GPU, n8n, database hay mở port HTTP.
 
-## Quy tắc đối chiếu con dấu (đã chốt)
+1. Tạo bot với @BotFather trên Telegram và lấy token.
+2. Trong terminal chạy:
 
-1. **Ưu tiên MST**: nếu đọc được MST trên dấu với độ tin cậy đủ cao:
-   - Khớp MST chứng từ → `PASS_MST`.
-   - Mâu thuẫn MST chứng từ → `FAIL`; không dùng tên để bỏ qua sai lệch.
-2. **Fallback theo tên**: nếu MST trên dấu không đọc được/chưa đủ tin cậy:
-   - Tên doanh nghiệp trên dấu khớp rõ ràng với tên trên chứng từ → `PASS_NAME_FALLBACK`.
-   - Tên mâu thuẫn rõ ràng → `FAIL`.
-   - Dữ liệu mờ, thiếu hoặc không chắc chắn → `REVIEW`.
-3. Không phát hiện dấu → `FAIL` nếu hồ sơ được cấu hình bắt buộc có dấu.
-4. Chữ ký số không tự động được coi là dấu tròn vật lý.
+    git clone https://github.com/nguyenxtan/ocr.git
+    cd ocr
+    cp .env.example .env
 
-`PASS` nghĩa là **đạt kiểm tra đối chiếu nội dung theo tiêu chí đã chọn**, không phải xác nhận pháp lý.
+3. Sửa file .env: điền TELEGRAM_BOT_TOKEN của bot.
+4. Chạy: docker compose up -d --build
+5. Xem log: docker compose logs -f bot
+6. Gửi một file PDF trong chat riêng với bot. Dừng bằng docker compose down.
 
-## Phản hồi Telegram ngắn gọn (đã chốt)
+**Bảo mật:** Không commit .env và không gửi bot token vào chat. Mặc định ALLOWED_USER_IDS trống nên bất kỳ người dùng Telegram nào tìm được bot đều có thể dùng. Gõ /id trong bot để lấy Telegram ID, điền ALLOWED_USER_IDS=123456789 vào .env và chạy docker compose up -d --force-recreate để chỉ cho phép tài khoản đó. Mỗi bot chỉ nên chạy một tiến trình polling.
 
-Bot chỉ trả **kết luận, thông tin chính, phương án đối chiếu và lý do khi có lỗi**. Có nút `🔍 Xem chi tiết` để mở ảnh dấu/bằng chứng OCR khi cần.
+## Cấu hình .env
 
-### 1. PASS bằng MST
+- TELEGRAM_BOT_TOKEN: bắt buộc, token BotFather.
+- ALLOWED_USER_IDS: Telegram ID được phép, phân tách dấu phẩy; trống nghĩa là mọi người dùng chat riêng.
+- MAX_PDF_MB: giới hạn dung lượng; tối đa 20 MB theo Bot API tải file thông thường, mặc định 15.
+- MAX_PAGES: giới hạn số trang, mặc định 10.
+- OCR_LANG: ngôn ngữ OCR, mặc định vie+eng.
 
-```text
-✅ HỒ SƠ ĐẠT
-🏢 Doanh nghiệp: [Tên doanh nghiệp]
-🔴 Con dấu: Có
-✅ MST: [MST] (Khớp)
-✅ Người ký: [Tên] (Khớp)
-🔎 Đối chiếu: MST
-```
+## Luồng POC
 
-### 2. PASS bằng tên (fallback)
+1. Nhận và kiểm tra PDF, mật khẩu, số trang và dung lượng.
+2. PyMuPDF render các trang; OpenCV tìm **vòng dấu đỏ** theo nét hình tròn, không chỉ thấy màu đỏ là kết luận có dấu.
+3. Tesseract OCR trang đầu (trường tên/MST doanh nghiệp); OCR riêng phần nét đỏ trên con dấu.
+4. MST dấu đọc đủ tin cậy và đúng checksum thì so với MST chứng từ. MST mâu thuẫn: **FAIL**, không dùng tên để bỏ qua.
+5. Nếu MST dấu không đọc chắc, dùng RapidFuzz để so khớp tên doanh nghiệp trên dấu với chứng từ (fallback).
+6. Không phát hiện dấu đỏ: **FAIL**. Không đủ thông tin để so khớp: **REVIEW**.
 
-```text
-✅ HỒ SƠ ĐẠT
-🏢 Doanh nghiệp: [Tên doanh nghiệp]
-🔴 Con dấu: Có
-⚠️ MST trên dấu: Không đọc được
-✅ Tên doanh nghiệp: Khớp
-✅ Người ký: [Tên] (Khớp)
-🔎 Đối chiếu: Tên doanh nghiệp (Fallback)
-```
+Bot chỉ trả hai dòng, ví dụ:
 
-### 3. FAIL
+    ✅ PASS
+    Tên doanh nghiệp trên dấu khớp chứng từ.
 
-```text
-❌ HỒ SƠ KHÔNG ĐẠT
-🏢 Doanh nghiệp: [Tên doanh nghiệp]
-🔴 Con dấu: Không phát hiện
-⚠️ Chữ ký số: Có
-📌 Lý do: Thiếu dấu doanh nghiệp theo tiêu chí kiểm tra.
-```
+    ❌ FAIL
+    Không phát hiện dấu tròn đỏ.
 
-Trạng thái: `PASS`, `FAIL`, `REVIEW` (chưa đủ dữ liệu). Ghi nhận phương thức `MST_MATCH` hoặc `NAME_FALLBACK` trong dữ liệu kết quả, dù câu trả lời cho người dùng dùng tiếng Việt dễ hiểu. Nếu MST đọc được nhưng **không khớp**, không được fallback theo tên để bỏ qua mâu thuẫn. Trường tên/chức vụ chỉ hiện “Khớp” khi có đủ dữ liệu đọc được. `FAIL` do không có dấu chỉ áp dụng khi quy trình bắt buộc dấu tròn vật lý.
+    ⚠️ REVIEW
+    Đã thấy dấu nhưng chưa đọc đủ để đối chiếu.
 
-## Công nghệ POC dự kiến
+Kết quả nội bộ có method = MST_MATCH hoặc NAME_FALLBACK, nhưng tin nhắn chỉ cần trạng thái và lý do.
 
-Python, Telegram Bot API, PyMuPDF (đọc/render PDF), OpenCV (xác định vùng con dấu), PaddleOCR (nhận dạng chữ), RapidFuzz (so khớp tên có kiểm soát), pyHanko (chữ ký số). AI Vision chỉ dự phòng cho trường hợp OCR khó.
+**Giới hạn:** PASS chỉ là khớp nội dung. Không xác thực dấu thật/giả. Bản đầu chưa đối chiếu người ký/chức vụ và chưa kiểm định chữ ký số PDF. Chữ ký số không được tính là dấu đỏ vật lý. Dấu xanh/đen, dấu thiếu vòng, PDF với bố cục không thông thường có thể bị REVIEW hoặc FAIL nhầm; cần kiểm thử thêm.
 
-## Không thuộc phạm vi
+## Công nghệ
 
-- Không phân biệt con dấu thật/giả.
-- Không kết luận tư cách người đại diện theo pháp luật hay giá trị pháp lý của chữ ký.
-- Không hỗ trợ ảnh hoặc Word gửi trực tiếp; chỉ nhận PDF.
+- python-telegram-bot: Telegram long polling, không cần domain hoặc webhook.
+- PyMuPDF: đọc/render PDF; cần lưu ý giấy phép AGPL/commercial nếu đưa vào sản phẩm thương mại.
+- OpenCV, NumPy: nhận diện con dấu tròn đỏ.
+- Tesseract, pytesseract: OCR Việt/Anh chạy trong Docker, không gọi AI bên ngoài.
+- RapidFuzz: so khớp tên doanh nghiệp gần đúng theo quy tắc.
 
-## Lưu ý dữ liệu
+## Kiểm thử
 
-Không đưa PDF khách hàng, giấy tờ định danh, token Telegram hoặc khóa bí mật lên repo công khai. File tải lên chỉ xử lý tạm thời; xóa sau khi hoàn tất.
+Chạy: python -m pip install -r requirements-dev.txt rồi python -m pytest -q.
+
+Đã chạy kiểm thử logic (6 bài đạt) và thử trực tiếp 2 PDF mẫu:
+- File scan có dấu: PASS bằng NAME_FALLBACK.
+- File PDF không dấu đỏ: FAIL.
+
+**Chưa kiểm thử Docker và kết nối Telegram thực tế**, do chưa có token. Kết quả 2 file không chứng minh độ chính xác tổng thể; cần bộ dữ liệu có/không dấu, dấu mờ, sai MST để benchmark. Không đưa hồ sơ khách hàng hoặc thông tin nhạy cảm vào repo công khai. File tải về nằm trong thư mục tạm, được xóa sau khi xử lý. Log không lưu nội dung PDF.
 
 ## Trạng thái
 
-Đã chốt yêu cầu và logic fallback. Chưa triển khai/kiểm thử bot, OCR và benchmark thực tế.
+POC giai đoạn 1: bot trả trạng thái, OCR/con dấu ở mức sơ bộ; chưa kết luận thẩm quyền và chữ ký số. Bước sau: benchmark nhiều PDF, tối ưu OCR dấu cong và người ký.
