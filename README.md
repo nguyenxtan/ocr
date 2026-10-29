@@ -24,20 +24,44 @@ Bot Telegram kiểm tra, trích xuất và **so khớp nội dung chứng từ P
 
 `PASS` nghĩa là **đạt kiểm tra đối chiếu nội dung theo tiêu chí đã chọn**, không phải xác nhận pháp lý.
 
-## Phản hồi Telegram ngắn gọn
+## Phản hồi Telegram ngắn gọn (đã chốt)
+
+Bot chỉ trả **kết luận, thông tin chính, phương án đối chiếu và lý do khi có lỗi**. Có nút `🔍 Xem chi tiết` để mở ảnh dấu/bằng chứng OCR khi cần.
+
+### 1. PASS bằng MST
 
 ```text
-✅ PASS · NAME_FALLBACK
-📄 File: ten-file.pdf (2 trang)
-🔴 Con dấu: Có · Trang 1, 2
-🏢 Doanh nghiệp: Khớp tên
-🧾 MST chứng từ: 3501556139
-🧾 MST trên dấu: Không đọc được
-✍️ Tên/chức vụ người ký: Khớp thông tin khai báo
-⚠️ MST trên dấu chưa được xác minh.
+✅ HỒ SƠ ĐẠT
+🏢 Doanh nghiệp: [Tên doanh nghiệp]
+🔴 Con dấu: Có
+✅ MST: [MST] (Khớp)
+✅ Người ký: [Tên] (Khớp)
+🔎 Đối chiếu: MST
 ```
 
-Trạng thái chính: `PASS`, `FAIL`, `REVIEW`. Ghi rõ phương thức: `MST_MATCH` hoặc `NAME_FALLBACK`. Chỉ đánh dấu trường là khớp khi có đủ bằng chứng đọc được.
+### 2. PASS bằng tên (fallback)
+
+```text
+✅ HỒ SƠ ĐẠT
+🏢 Doanh nghiệp: [Tên doanh nghiệp]
+🔴 Con dấu: Có
+⚠️ MST trên dấu: Không đọc được
+✅ Tên doanh nghiệp: Khớp
+✅ Người ký: [Tên] (Khớp)
+🔎 Đối chiếu: Tên doanh nghiệp (Fallback)
+```
+
+### 3. FAIL
+
+```text
+❌ HỒ SƠ KHÔNG ĐẠT
+🏢 Doanh nghiệp: [Tên doanh nghiệp]
+🔴 Con dấu: Không phát hiện
+⚠️ Chữ ký số: Có
+📌 Lý do: Thiếu dấu doanh nghiệp theo tiêu chí kiểm tra.
+```
+
+Trạng thái: `PASS`, `FAIL`, `REVIEW` (chưa đủ dữ liệu). Ghi nhận phương thức `MST_MATCH` hoặc `NAME_FALLBACK` trong dữ liệu kết quả, dù câu trả lời cho người dùng dùng tiếng Việt dễ hiểu. Nếu MST đọc được nhưng **không khớp**, không được fallback theo tên để bỏ qua mâu thuẫn. Trường tên/chức vụ chỉ hiện “Khớp” khi có đủ dữ liệu đọc được. `FAIL` do không có dấu chỉ áp dụng khi quy trình bắt buộc dấu tròn vật lý.
 
 ## Công nghệ POC dự kiến
 
