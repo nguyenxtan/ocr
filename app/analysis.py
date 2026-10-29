@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from html import escape
+from hashlib import blake2b
 from pathlib import Path
 import re
 import unicodedata
@@ -33,6 +34,7 @@ class Result:
     signer_status: str | None = None
     signer_name: str | None = None
     signer_page: int | None = None
+    stamp_fingerprint: str | None = None
     digital_signature: str | None = None
     digital_trusted: bool | None = None
 
@@ -280,6 +282,11 @@ def detect_stamp(rgb):
     return results[0] if results else (0.0, None)
 
 
+def stamp_fingerprint(mask: np.ndarray) -> str:
+    """Stable fingerprint of the exact red-ink pixels used for comparison."""
+    return blake2b(mask.tobytes(), digest_size=8).hexdigest()
+
+
 def render_page(page: fitz.Page) -> np.ndarray:
     max_pixels = 6_000_000
     width, height = page.rect.width, page.rect.height
@@ -357,11 +364,12 @@ def _analyze_stamp_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng
                 return Result("REVIEW", "Chưa đọc được tên doanh nghiệp trên chứng từ.", stamp_page=best_page)
             # Verify each likely seal, rather than assuming the strongest
             # circle is the one identifying the issuing company.
-            matched_mst: list[int] = []
-            mismatched_mst: list[int] = []
-            matched_name: list[tuple[int, int, str]] = []
+            matched_mst: list[tuple[int, str]] = []
+            mismatched_mst: list[tuple[int, str]] = []
+            matched_name: list[tuple[int, int, str, str]] = []
             unresolved = False
             for index, (_, seal_mask, stamp_page) in enumerate(strong):
+                fingerprint = stamp_fingerprint(seal_mask)
                 evidence = read_seal(seal_mask, ocr_lang, tax_code_valid)
                 name_method = "NAME_FALLBACK"
                 if enable_paddle and index < 2:
@@ -383,29 +391,34 @@ def _analyze_stamp_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng
                 if doc_mst and len(codes) == 1:
                     seal_mst = next(iter(codes))
                     if seal_mst == doc_mst:
-                        matched_mst.append(stamp_page)
+                        matched_mst.append((stamp_page, fingerprint))
                     else:
-                        mismatched_mst.append(stamp_page)
+                        mismatched_mst.append((stamp_page, fingerprint))
                     continue
                 if match.matched and match.match_pct is not None:
-                    matched_name.append((stamp_page, match.match_pct, name_method))
+                    matched_name.append((stamp_page, match.match_pct, name_method, fingerprint))
             # Do not treat an unreadable MST as a mismatch.
             mst_unverified = "UNREADABLE" if doc_mst else "NO_DOC"
             if mismatched_mst and (matched_mst or matched_name or unresolved):
                 return Result("REVIEW", "Nhiều dấu có thông tin mâu thuẫn.",
-                              stamp_page=mismatched_mst[0], mst_status="CONFLICT")
+                              stamp_page=mismatched_mst[0][0], mst_status="CONFLICT",
+                              stamp_fingerprint=mismatched_mst[0][1])
             if mismatched_mst:
                 return Result("FAIL", "MST trên dấu khác MST chứng từ.",
-                              stamp_page=mismatched_mst[0], mst_status="MISMATCH")
+                              stamp_page=mismatched_mst[0][0], mst_status="MISMATCH",
+                              stamp_fingerprint=mismatched_mst[0][1])
             if matched_mst:
+                page, fingerprint = matched_mst[0]
                 result = Result("PASS", "MST trên dấu khớp chứng từ.",
-                                "MST_MATCH", matched_mst[0], mst_status="MATCH")
+                                "MST_MATCH", page, mst_status="MATCH",
+                                stamp_fingerprint=fingerprint)
                 return check_signer_for_pass(result, doc, ocr_lang)
             if matched_name and not unresolved:
-                page, match_pct, method = max(matched_name, key=lambda m: m[1])
+                page, match_pct, method, fingerprint = max(matched_name, key=lambda m: m[1])
                 result = Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
                                 method, page,
-                                name_match_pct=match_pct, mst_status=mst_unverified)
+                                name_match_pct=match_pct, mst_status=mst_unverified,
+                                stamp_fingerprint=fingerprint)
                 return check_signer_for_pass(result, doc, ocr_lang)
             return Result("REVIEW", "Chưa đối chiếu chắc thông tin trên dấu.",
                           stamp_page=best_page,
