@@ -10,7 +10,7 @@ import re
 import time
 from tempfile import TemporaryDirectory
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -149,11 +149,19 @@ async def show_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.answer("Ảnh đã hết hạn hoặc bạn không có quyền xem.", show_alert=True)
         return
     await query.answer()
+    streams = []
     for item in photos:
         image = BytesIO(item.data)
         image.name = "bang-chung-ocr.jpg"
-        await context.bot.send_photo(chat_id=query.message.chat.id, photo=image,
-                                     caption=item.caption)
+        streams.append(image)
+    if len(photos) == 1:
+        await context.bot.send_photo(chat_id=query.message.chat.id,
+                                     photo=streams[0], caption=photos[0].caption)
+    else:
+        # Keep evidence compact in one Telegram photo album.
+        album = [InputMediaPhoto(media=stream, caption=item.caption)
+                 for stream, item in zip(streams, photos)]
+        await context.bot.send_media_group(chat_id=query.message.chat.id, media=album)
 
 
 async def other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
