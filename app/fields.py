@@ -1,10 +1,14 @@
-"""Extract organization names from the upper-left letterhead of official PDFs."""
+"""Extract issuing organizations from varied letterhead positions in PDFs."""
 
 from __future__ import annotations
 
 import re
 import unicodedata
 
+
+COMPANY_MARKER = re.compile(
+    r"\b(?:TONG CONG TY|TAP DOAN|DOANH NGHIEP TU NHAN|CHI NHANH|CONG TY|CTCP|CTY)\b"
+)
 
 STOP_WORDS = re.compile(
     r"^(?:SO\b|CONG HOA\b|DOC LAP\b|KE HOACH\b|THONG BAO\b|"
@@ -29,17 +33,17 @@ def extract_letterhead_company(header_text: str) -> str | None:
     lines = [normalize(line) for line in header_text.splitlines()]
     lines = [line for line in lines if line]
     for i, line in enumerate(lines[:9]):
-        start = re.search(r"\b(?:CONG TY|CTCP|CTY)\b", line)
+        start = COMPANY_MARKER.search(line)
         if not start:
             continue
         segments = [line[start.start():]]
-        for next_line in lines[i + 1:i + 3]:
-            if STOP_WORDS.search(next_line) or re.search(r"\d", next_line):
+        for next_line in lines[i + 1:i + 5]:
+            if STOP_WORDS.search(next_line) or COMPANY_MARKER.search(next_line) or re.search(r"\d", next_line):
                 break
             if len(next_line.split()) < 2:
                 break
             segments.append(next_line)
         candidate = " ".join(segments)
-        if len(candidate.split()) >= 5:
+        if len(candidate.split()) >= 4:
             return candidate
     return None
