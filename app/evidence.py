@@ -18,7 +18,7 @@ from app.analysis import Result, detect_stamps, render_page, stamp_fingerprint
 # Fixed filenames and captions, never supplied by a Telegram user.
 EVIDENCE_FILES = (
     ("proof_seal.jpg", "🔴 Vùng con dấu"),
-    ("proof_signer.jpg", "✍️ Khu vực ký gần con dấu"),
+    ("proof_signer.jpg", "✍️ Khu vực ký (tham khảo)"),
     ("proof_header.jpg", "🏢 Phần đầu chứng từ"),
 )
 
@@ -94,27 +94,36 @@ def build_evidence(pdf: Path, result: Result, output_dir: Path) -> list[str]:
             if _save_jpeg(stamp_page[t:b, l:r], output_dir / "proof_seal.jpg"):
                 written.append("proof_seal.jpg")
 
-        # Nearby signing region, with a highlighted rectangle showing where
-        # the stamp detector actually found the candidate.
-        height, width = stamp_page.shape[:2]
-        center_x, center_y = (x0 + x1) / 2, (y0 + y1) / 2
-        near_box = _clamp_box(
-            stamp_page,
-            center_x - width * .32,
-            center_y - height * .23,
-            center_x + width * .32,
-            center_y + height * .23,
-        )
-        if near_box:
-            left, top, right, bottom = near_box
-            nearby = stamp_page[top:bottom, left:right].copy()
-            cv2.rectangle(
-                nearby, (max(0, x0 - left), max(0, y0 - top)),
-                (min(right-left-1, x1-left), min(bottom-top-1, y1-top)),
-                (25, 135, 220), 3,
-            )
-            if _save_jpeg(nearby, output_dir / "proof_signer.jpg"):
+        # Show the signing page when it is different from the stamp page.
+        # Otherwise show the nearby signing region and mark the detected seal.
+        if (result.signer_page is not None
+                and 1 <= result.signer_page <= doc.page_count
+                and result.signer_page != result.stamp_page):
+            signer_page = render_page(doc[result.signer_page - 1])
+            h, w = signer_page.shape[:2]
+            signed_region = signer_page[round(h * .45):, :]
+            if _save_jpeg(signed_region, output_dir / "proof_signer.jpg"):
                 written.append("proof_signer.jpg")
+        else:
+            height, width = stamp_page.shape[:2]
+            center_x, center_y = (x0 + x1) / 2, (y0 + y1) / 2
+            near_box = _clamp_box(
+                stamp_page,
+                center_x - width * .43,
+                center_y - height * .23,
+                center_x + width * .43,
+                center_y + height * .23,
+            )
+            if near_box:
+                left, top, right, bottom = near_box
+                nearby = stamp_page[top:bottom, left:right].copy()
+                cv2.rectangle(
+                    nearby, (max(0, x0 - left), max(0, y0 - top)),
+                    (min(right-left-1, x1-left), min(bottom-top-1, y1-top)),
+                    (25, 135, 220), 3,
+                )
+                if _save_jpeg(nearby, output_dir / "proof_signer.jpg"):
+                    written.append("proof_signer.jpg")
 
         # First-page heading often contains the issuing business and/or MST.
         # Caption deliberately says "header", not that those fields were read.
