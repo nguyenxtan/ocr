@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
 from pathlib import Path
 import re
@@ -13,6 +13,7 @@ import fitz
 import numpy as np
 from app.document_reader import read_document_identity
 from app.seal_ocr import read_seal, compare_name, strict_name_match
+from app.signatories import inspect_signatures
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,8 @@ class Result:
     stamp_page: int | None = None
     name_match_pct: int | None = None
     mst_status: str | None = None
+    signer_status: str | None = None
+    signer_name: str | None = None
 
     def telegram_html(self) -> str:
         headings = {
@@ -36,12 +39,12 @@ class Result:
         elif self.status == "FAIL":
             lines.append(f"🔎 {escape(self.reason)}")
             return "\n".join(lines)
-        if self.status == "PASS" and self.method == "NAME_FALLBACK":
+        if self.method == "NAME_FALLBACK":
             ratio = f" {self.name_match_pct}%" if self.name_match_pct is not None else ""
             lines.append(f"🏢 Tên doanh nghiệp: <b>Khớp{ratio}</b>")
-        elif self.status == "REVIEW" and self.stamp_page is not None:
+        elif self.status == "REVIEW" and self.stamp_page is not None and not self.signer_status:
             lines.append(f"🔎 {escape(self.reason)}")
-        elif self.status == "FAIL" and self.mst_status != "MISMATCH":
+        elif self.status == "FAIL" and self.mst_status != "MISMATCH" and self.signer_status != "MISMATCH":
             lines.append(f"🔎 {escape(self.reason)}")
         mst_messages = {
             "MATCH": "🧾 MST: <b>Khớp</b>",
@@ -54,6 +57,16 @@ class Result:
             lines.append(mst_messages[self.mst_status])
         elif self.status == "PASS" and self.method == "MST_MATCH":
             lines.append(mst_messages["MATCH"])
+        signer_labels = {
+            "MATCH": "✍️ Người ký: <b>Khớp</b> tên đại diện",
+            "MISMATCH": "✍️ Người ký: <b>Không khớp</b> tên đại diện",
+            "UNREADABLE": "✍️ Người ký: Chưa đọc rõ để đối chiếu",
+            "NOT_DECLARED": "✍️ Người ký: Chưa có đại diện để đối chiếu",
+        }
+        if self.signer_status == "NOT_DECLARED" and self.signer_name:
+            lines.append(f"✍️ Người ký: {escape(self.signer_name)} · Chưa đối chiếu")
+        elif self.signer_status in signer_labels:
+            lines.append(signer_labels[self.signer_status])
         return "\n".join(lines)
 
     def telegram_text(self) -> str:
@@ -196,6 +209,21 @@ def render_page(page: fitz.Page) -> np.ndarray:
     return np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3).copy()
 
 
+def check_signer_for_pass(result: Result, doc, ocr_lang: str) -> Result:
+    """Compare independently read signer and declared representative names.
+
+    Keep stamp-only PASS when the form has no named representative field.
+    Low-confidence signer OCR must trigger REVIEW, never a false name match.
+    """
+    signature = inspect_signatures(doc, render_page, ocr_lang)
+    checked = replace(result, signer_status=signature.status, signer_name=signature.signed)
+    if signature.status == "MISMATCH":
+        return replace(checked, status="FAIL", reason="Người ký không khớp đại diện khai báo.")
+    if signature.status == "UNREADABLE":
+        return replace(checked, status="REVIEW", reason="Chưa đọc chắc tên người ký.")
+    return checked
+
+
 def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> Result:
     try:
         with fitz.open(path) as doc:
@@ -256,13 +284,15 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                 return Result("FAIL", "MST trên dấu khác MST chứng từ.",
                               stamp_page=mismatched_mst[0], mst_status="MISMATCH")
             if matched_mst:
-                return Result("PASS", "MST trên dấu khớp chứng từ.",
-                              "MST_MATCH", matched_mst[0], mst_status="MATCH")
+                result = Result("PASS", "MST trên dấu khớp chứng từ.",
+                                "MST_MATCH", matched_mst[0], mst_status="MATCH")
+                return check_signer_for_pass(result, doc, ocr_lang)
             if matched_name and not unresolved:
                 page, pct = max(matched_name, key=lambda m: m[1])
-                return Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
-                              "NAME_FALLBACK", page, name_match_pct=pct,
-                              mst_status=mst_unverified)
+                result = Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.",
+                                "NAME_FALLBACK", page, name_match_pct=pct,
+                                mst_status=mst_unverified)
+                return check_signer_for_pass(result, doc, ocr_lang)
             return Result("REVIEW", "Chưa đối chiếu chắc thông tin trên dấu.",
                           stamp_page=best_page,
                           mst_status="CONFLICT" if unresolved else mst_unverified)
