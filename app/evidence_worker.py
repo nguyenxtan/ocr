@@ -22,7 +22,7 @@ def main() -> None:
                     stamp_fingerprint=fingerprint, signer_page=signer_page)
     filenames = build_evidence(pdf, result, pdf.parent)
     # Only predefined filenames, never raw image contents or OCR/PDF text.
-    sys.stdout.write(json.dumps(filenames))
+    sys.stdout.write("\\nOCR_EVIDENCE_JSON:" + json.dumps(filenames) + "\\n")
 
 
 if __name__ == "__main__":
