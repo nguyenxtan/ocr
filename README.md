@@ -57,6 +57,17 @@ Không đưa token, PDF khách hàng, CMND hoặc giấy tờ nội bộ vào re
 
 Chữ ký số có thể bổ sung dòng `🔏 Chữ ký số: Toàn vẹn · Chưa xác thực chứng thư`. Các dòng phụ chỉ xuất hiện khi có dữ liệu. **% khớp tên là mức bao phủ các từ phân biệt mà OCR nhận được**, không phải cam kết độ chính xác hay xác thực pháp lý.
 
+### 🔍 Xem bằng chứng trực quan (tùy chọn)
+
+Khi bot tìm được vùng con dấu, bên dưới kết quả sẽ có nút **🔍 Xem bằng chứng**. Bot **không gửi ảnh mặc định**; chỉ gửi khi chính người đã nộp PDF bấm nút.
+
+Các ảnh được tạo trong cùng lượt xử lý gồm: **vùng con dấu**, **vùng ký gần con dấu (có khung đánh dấu vị trí dấu)** và **phần đầu chứng từ để xem thông tin doanh nghiệp**. Đây là ảnh tham khảo để người dùng kiểm tra lại; vùng ký gần dấu không tự chứng minh người ký hay thẩm quyền.
+
+- Chỉ lưu ảnh JPEG thu nhỏ trong **RAM tối đa 10 phút**, không lưu PDF trong cache; file PDF và ảnh tạm trên đĩa bị xóa ngay sau lần xử lý.
+- Mỗi nút thuộc **Telegram ID và cuộc chat** đã gửi hồ sơ; người khác bấm sẽ bị từ chối. Hết hạn hoặc Docker khởi động lại thì cần gửi PDF mới.
+- Cache tối đa **32 hồ sơ / 24 MB**; mỗi hồ sơ tối đa 3 ảnh, mỗi ảnh tối đa 550 KB. Giới hạn này giúp PUBLIC không chiếm RAM vô hạn.
+- Không cần API ngoài, database, mở port hay thay đổi `.env`. Dùng được ở cả chế độ OCR thường và PaddleOCR.
+
 ## 4. Công nghệ & cấu hình
 
 | Thư viện | Vai trò |
