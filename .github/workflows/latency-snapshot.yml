@@ -1,0 +1,25 @@
+name: Latency investigation snapshot
+on:
+  push:
+    branches: [fix/ocr-response-latency]
+    paths: [.github/workflows/latency-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Package tracked source and portable Telegram client
+        run: |
+          mkdir -p /tmp/ocr-snapshot
+          git archive HEAD > /tmp/ocr-snapshot/source.tar
+          python -m pip download --no-deps python-telegram-bot==22.8 -d /tmp/ocr-snapshot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latency-investigation-source
+          path: /tmp/ocr-snapshot/
+          retention-days: 1
