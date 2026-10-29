@@ -36,6 +36,15 @@ last_seen: dict[int, float] = {}
 proof_cache = ProofCache(ttl_seconds=600, max_items=32, max_bytes=24 * 1024 * 1024)
 
 
+def evidence_page_for(filename: str, result: Result) -> int | None:
+    """Page label for a proof image, without assuming signer and stamp coincide."""
+    if filename == "proof_header.jpg":
+        return 1
+    if filename == "proof_signer.jpg":
+        return result.signer_page or result.stamp_page
+    return result.stamp_page
+
+
 def is_allowed(update: Update) -> bool:
     """PUBLIC allows private-chat users; PRIVATE requires an allowlisted ID."""
     if not update.effective_user:
@@ -115,8 +124,7 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     # Only JPEG bytes remain after TemporaryDirectory removes the PDF.
                     photos = tuple(
                         ProofPhoto(
-                            caption=f"{caption} · Trang "
-                                    f"{1 if name == 'proof_header.jpg' else (result.signer_page or result.stamp_page) if name == 'proof_signer.jpg' else result.stamp_page}",
+                            caption=f"{caption} · Trang {evidence_page_for(name, result)}",
                             data=(Path(folder) / name).read_bytes(),
                         )
                         for name, caption in EVIDENCE_FILES
