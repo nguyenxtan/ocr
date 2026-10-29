@@ -10,6 +10,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install OCR runtime for integration tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng poppler-utils
       - name: Install Python dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Python unit tests
