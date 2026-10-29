@@ -283,7 +283,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, pdf))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, other))
     log.info("Starting Telegram PDF OCR bot (access_mode=%s)", ACCESS_MODE)
-    app.run_polling(drop_pending_updates=True, allowed_updates=["message"])
+    # Inline buttons produce callback_query updates, not message updates.
+    app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
