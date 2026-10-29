@@ -40,7 +40,15 @@ async def analyze_isolated(path: Path, max_pages: int, lang: str,
     if process.returncode != 0 or len(stdout) > 32000:
         return Result("REVIEW", "Không xử lý được PDF an toàn.")
     try:
-        payload = json.loads(stdout.decode("utf-8"))
+        # A PDF library can emit a warning to stdout before our JSON.
+        # Consume only the explicitly framed worker result, not raw stdout.
+        lines = stdout.decode("utf-8", errors="replace").splitlines()
+        marker = "OCR_RESULT_JSON:"
+        raw = next((line[len(marker):] for line in reversed(lines)
+                    if line.startswith(marker)), None)
+        if raw is None:
+            raise ValueError("Missing worker-result marker")
+        payload = json.loads(raw)
         if payload.get("status") not in ("PASS", "FAIL", "REVIEW"):
             raise ValueError("Unexpected status")
         return Result(**payload)
@@ -79,7 +87,13 @@ async def build_evidence_isolated(path: Path, result: Result, timeout_s: int = 1
     if process.returncode != 0 or len(stdout) > 1024:
         return []
     try:
-        names = json.loads(stdout.decode("utf-8"))
+        lines = stdout.decode("utf-8", errors="replace").splitlines()
+        marker = "OCR_EVIDENCE_JSON:"
+        raw = next((line[len(marker):] for line in reversed(lines)
+                    if line.startswith(marker)), None)
+        if raw is None:
+            return []
+        names = json.loads(raw)
         allowed = {"proof_seal.jpg", "proof_signer.jpg", "proof_header.jpg"}
         if not isinstance(names, list):
             return []
