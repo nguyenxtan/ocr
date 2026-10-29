@@ -63,7 +63,7 @@ Chữ ký số có thể bổ sung dòng `🔏 Chữ ký số: Toàn vẹn · Ch
 | RapidFuzz | So khớp từ tên doanh nghiệp |
 | Poppler `pdfsig` | Kiểm tra chữ ký số PDF |
 
-`.env.example` cung cấp các tham số: bot token, Telegram ID được phép, giới hạn file và trang, thời gian xử lý, bộ nhớ worker, số lượt xử lý song song và khoảng cách giữa các lượt gửi.
+`.env.example` cung cấp các tham số: bot token, Telegram ID được phép, giới hạn file và trang, thời gian xử lý, bộ nhớ container (trong Compose), số lượt xử lý song song và khoảng cách giữa các lượt gửi.
 
 **An toàn:** Mỗi PDF chạy trong một process riêng. Nếu quá hạn xử lý thì bot dừng process, trả REVIEW; không để OCR chạy mãi dưới nền. Tesseract được giới hạn một luồng CPU. Bộ đọc PDF giới hạn kích thước trang render. Không lưu PDF hay ảnh con dấu lâu dài, không log nội dung OCR.
 

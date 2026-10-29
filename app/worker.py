@@ -18,10 +18,10 @@ def restrict_resources() -> None:
     if sys.platform != "linux":
         return
     import resource
-    limit_mb = int(os.getenv("WORKER_MEMORY_MB", "1536"))
-    limit_bytes = limit_mb * 1024 * 1024
-    # Virtual-address limit is intentionally generous for OpenCV shared libraries.
-    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+    # RLIMIT_AS is not a safe bound for OpenCV: shared libraries reserve large
+    # virtual ranges while using little RAM, triggering false out-of-memory.
+    # The Docker cgroup in compose.yaml limits actual RAM to 2 GiB.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     max_cpu = int(os.getenv("WORKER_CPU_SECONDS", "90"))
     resource.setrlimit(resource.RLIMIT_CPU, (max_cpu, max_cpu + 5))
 
