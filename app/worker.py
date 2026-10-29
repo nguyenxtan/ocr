@@ -29,12 +29,23 @@ def restrict_resources() -> None:
 def main() -> None:
     os.environ.setdefault("OMP_THREAD_LIMIT", "1")
     restrict_resources()
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         raise SystemExit(2)
     path = Path(sys.argv[1])
     pages = int(sys.argv[2])
     languages = sys.argv[3]
     result = analyze_pdf(path, pages, languages)
+    if len(sys.argv) == 5:
+        # Only temporary output next to the input PDF is permitted.
+        target = Path(sys.argv[4])
+        if target.resolve() != path.parent.resolve() or not target.is_dir():
+            raise SystemExit(2)
+        try:
+            from app.evidence import build_evidence
+            build_evidence(path, result, target)
+        except Exception as error:
+            # Photo generation is best effort: never change the OCR decision.
+            sys.stderr.write(f"Optional evidence failed: {type(error).__name__}\n")
     sys.stdout.write(json.dumps(asdict(result), ensure_ascii=False))
     sys.stdout.flush()
 
