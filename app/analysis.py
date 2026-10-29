@@ -12,6 +12,7 @@ import fitz
 import numpy as np
 import pytesseract
 from rapidfuzz import fuzz
+from app.fields import extract_letterhead_company
 
 
 @dataclass(frozen=True)
@@ -188,7 +189,23 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
             page_text = pytesseract.image_to_string(first_page, lang=ocr_lang, config="--psm 3")
             company, doc_mst = extract_document_fields(page_text)
             if not company:
-                return Result("REVIEW", f"Có dấu ở trang {best_page}, nhưng thiếu tên doanh nghiệp để đối chiếu.")
+                # Official letters often show the company in a multi-line
+                # upper-left letterhead, without a labeled company-name field.
+                # Crop the issuing entity area so the right-side national
+                # header and unrelated companies in the body cannot interfere.
+                header = first_page[
+                    :int(first_page.shape[0] * 0.18),
+                    :int(first_page.shape[1] * 0.48),
+                ]
+                header_text = pytesseract.image_to_string(
+                    header, lang=ocr_lang, config="--psm 6"
+                )
+                company = extract_letterhead_company(header_text)
+            if not company:
+                return Result(
+                    "REVIEW",
+                    f"Có dấu ở trang {best_page}, nhưng chưa đọc được tên doanh nghiệp trên chứng từ.",
+                )
             # OCR only red pixels of the seal, avoiding black text underneath.
             only_red = cv2.resize(255 - best_mask, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
             stamp_data = pytesseract.image_to_data(
@@ -212,6 +229,6 @@ def analyze_pdf(path: Path, max_pages: int = 10, ocr_lang: str = "vie+eng") -> R
                 return Result("REVIEW", "Có nhiều MST trên dấu; cần kiểm tra.")
             if name_matches(company, stamp_text):
                 return Result("PASS", "Tên doanh nghiệp trên dấu khớp chứng từ.", "NAME_FALLBACK")
-            return Result("REVIEW", "Đã thấy dấu nhưng chưa đọc đủ để đối chiếu.")
+            return Result("REVIEW", "Có dấu và tên doanh nghiệp, nhưng chưa đọc chắc thông tin trên dấu.")
     except (fitz.FileDataError, fitz.EmptyFileError, ValueError):
         return Result("REVIEW", "Không đọc được cấu trúc PDF.")
