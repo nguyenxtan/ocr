@@ -35,13 +35,14 @@ MAX_QUEUED = int(os.getenv("MAX_QUEUED_PDFS", "3"))
 QUEUE_WAIT_SEC = int(os.getenv("QUEUE_WAIT_SEC", "300"))
 EVIDENCE_TIMEOUT_SEC = int(os.getenv("EVIDENCE_TIMEOUT_SEC", "15"))
 semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+# Photos have their own bounded slot, never the slot used to admit OCR work.
+proof_semaphore = asyncio.Semaphore(1)
 last_seen: dict[int, float] = {}
 active_jobs: dict[int, asyncio.Task] = {}
 proof_cache = ProofCache(ttl_seconds=600, max_items=32, max_bytes=24 * 1024 * 1024)
 
 
 def evidence_page_for(filename: str, result: Result) -> int | None:
-    """Page label for a proof image, without assuming signer and stamp coincide."""
     if filename == "proof_header.jpg":
         return 1
     if filename == "proof_signer.jpg":
@@ -50,7 +51,6 @@ def evidence_page_for(filename: str, result: Result) -> int | None:
 
 
 def is_allowed(update: Update) -> bool:
-    """PUBLIC allows private-chat users; PRIVATE requires an allowlisted ID."""
     if not update.effective_user:
         return False
     if ACCESS_MODE == "PUBLIC":
@@ -74,7 +74,6 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cancel_job(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Cancel only the request created by this user, including its OCR process."""
     if update.effective_user is None or update.effective_message is None:
         return
     task = active_jobs.get(update.effective_user.id)
@@ -85,21 +84,52 @@ async def cancel_job(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.effective_message.reply_text("🛑 Đã yêu cầu hủy PDF của bạn.")
 
 
-async def _finish_status(progress, message, result: Result, markup=None) -> None:
-    """Always show a reason and replace the existing progress bubble."""
+async def _finish_status(progress, message, result: Result, markup=None):
+    """Return the actual result message, including when editing falls back to send."""
     html = result.telegram_html()
     try:
         if progress is not None:
             await progress.edit_text(html, parse_mode=ParseMode.HTML, reply_markup=markup)
-            return
-    except Exception as e:
-        log.warning("Editing status failed: type=%s", type(e).__name__)
-    await message.reply_text(html, parse_mode=ParseMode.HTML, reply_markup=markup)
+            return progress
+    except Exception as error:
+        log.warning("Editing status failed: type=%s", type(error).__name__)
+    return await message.reply_text(html, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _attach_proof(file_path: Path, result: Result, status_message,
+                        user_id: int, chat_id: int) -> int:
+    """Only append a button after real images exist; never edit verdict text."""
+    if result.stamp_page is None or status_message is None:
+        return 0
+    # Include waiting for a photo slot in the existing evidence deadline.
+    async with asyncio.timeout(EVIDENCE_TIMEOUT_SEC):
+        async with proof_semaphore:
+            filenames = await build_evidence_isolated(file_path, result, EVIDENCE_TIMEOUT_SEC)
+            captions = dict(EVIDENCE_FILES)
+            photos = []
+            for name in filenames:
+                candidate = file_path.parent / name
+                if (name not in captions or not candidate.is_file() or candidate.is_symlink()
+                        or not 0 < candidate.stat().st_size <= 550_000):
+                    continue
+                photos.append(ProofPhoto(
+                    caption=f"{captions[name]} · Trang {evidence_page_for(name, result)}",
+                    data=candidate.read_bytes(),
+                ))
+    if not photos:
+        return 0
+    token = proof_cache.add(user_id, chat_id, tuple(photos))
+    if not token:
+        return 0
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔍 Xem bằng chứng", callback_data=f"ev:{token}")
+    ]])
+    await status_message.edit_reply_markup(reply_markup=markup)
+    return len(photos)
 
 
 async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    user = update.effective_user
+    message, user = update.effective_message, update.effective_user
     if message is None or user is None:
         return
     if not is_allowed(update):
@@ -112,7 +142,6 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if document.file_size and document.file_size > MAX_PDF_MB * 1024 * 1024:
         await _finish_status(None, message, Result("REVIEW", "PDF vượt giới hạn dung lượng."))
         return
-
     user_id = user.id
     if user_id in active_jobs:
         await message.reply_text("⏳ Bạn đang có PDF trong hàng đợi hoặc đang xử lý. Dùng /stop để hủy.")
@@ -121,9 +150,6 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if now - last_seen.get(user_id, -float("inf")) < COOLDOWN_SEC:
         await message.reply_text("⏳ Vui lòng giãn cách giữa các lượt gửi PDF.")
         return
-
-    # PTB processes these callbacks in one asyncio event loop. Register the
-    # request BEFORE awaiting Telegram so the queue length stays bounded.
     if len(active_jobs) >= MAX_CONCURRENT + MAX_QUEUED:
         await message.reply_text("⏳ Hàng đợi đã đầy. Vui lòng thử lại sau.")
         return
@@ -132,23 +158,26 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     last_seen[user_id] = now
     acquired = False
     progress = None
+    verdict_sent = False
+    result = None
     try:
         progress_text = ("⏳ Đã nhận PDF · Đang chờ đến lượt..."
                          if position else "🔎 Đang kiểm tra PDF...")
         progress = await message.reply_text(progress_text)
         await asyncio.wait_for(semaphore.acquire(), timeout=QUEUE_WAIT_SEC)
         acquired = True
+        admitted_at = time.monotonic()
         if position:
             try:
                 await progress.edit_text("🔎 Đang kiểm tra PDF...")
             except Exception:
                 pass
         await context.bot.send_chat_action(message.chat_id, ChatAction.TYPING)
-        photos: tuple[ProofPhoto, ...] = ()
         with TemporaryDirectory(prefix="ocr-pdf-") as folder:
             file_path = Path(folder) / "upload.pdf"
             remote_file = await document.get_file()
             await remote_file.download_to_drive(custom_path=file_path)
+            downloaded_at = time.monotonic()
             if file_path.stat().st_size > MAX_PDF_MB * 1024 * 1024:
                 result = Result("REVIEW", "PDF vượt giới hạn dung lượng.")
             else:
@@ -157,46 +186,46 @@ async def pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if not valid_pdf:
                     result = Result("REVIEW", "Tệp không phải PDF hợp lệ.")
                 else:
-                    # Main verdict is independent of optional proof rendering.
                     result = await analyze_isolated(file_path, MAX_PAGES, OCR_LANG,
                                                     PROCESS_TIMEOUT_SEC)
-                    if result.stamp_page is not None:
-                        filenames = await build_evidence_isolated(
-                            file_path, result, EVIDENCE_TIMEOUT_SEC)
-                        captions = dict(EVIDENCE_FILES)
-                        photos = tuple(
-                            ProofPhoto(
-                                caption=f"{captions[name]} · Trang {evidence_page_for(name, result)}",
-                                data=(Path(folder) / name).read_bytes())
-                            for name in filenames if name in captions
-                            and (Path(folder) / name).is_file()
-                        )
-
-        reply_markup = None
-        if photos:
-            token = proof_cache.add(user_id, message.chat_id, photos)
-            if token:
-                reply_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔍 Xem bằng chứng", callback_data=f"ev:{token}")
-                ]])
-        await _finish_status(progress, message, result, reply_markup)
-        log.info("PDF status=%s, stamp_page=%s, signer=%s, proof_count=%d",
-                 result.status, result.stamp_page, result.signer_status, len(photos))
+            analyzed_at = time.monotonic()
+            # Publish the already complete decision BEFORE preparing optional photos.
+            # Release capacity before any Telegram network operation or photo work.
+            semaphore.release()
+            acquired = False
+            progress = await _finish_status(progress, message, result)
+            verdict_sent = True
+            delivered_at = time.monotonic()
+            log.info("PDF latency status=%s queue_s=%.3f download_s=%.3f ocr_s=%.3f verdict_s=%.3f",
+                     result.status, admitted_at - now, downloaded_at - admitted_at,
+                     analyzed_at - downloaded_at, delivered_at - now)
+            try:
+                photo_count = await _attach_proof(file_path, result, progress,
+                                                  user_id, message.chat_id)
+                log.info("PDF evidence count=%d evidence_s=%.3f", photo_count,
+                         time.monotonic() - delivered_at)
+            except Exception as error:
+                # Optional proof errors must not turn a completed PASS into REVIEW.
+                log.warning("Optional proof unavailable: type=%s evidence_s=%.3f",
+                            type(error).__name__, time.monotonic() - delivered_at)
     except asyncio.TimeoutError:
-        await _finish_status(progress, message,
-                             Result("REVIEW", "Hàng đợi quá lâu. Gửi lại PDF sau."))
+        if not verdict_sent:
+            await _finish_status(progress, message,
+                                 result or Result("REVIEW", "Hàng đợi quá lâu. Gửi lại PDF sau."))
     except asyncio.CancelledError:
-        await _finish_status(progress, message,
-                             Result("REVIEW", "Đã hủy xử lý PDF theo yêu cầu."))
-    except Exception as e:
-        log.error("PDF processing failed: error_type=%s", type(e).__name__)
-        await _finish_status(progress, message,
-                             Result("REVIEW", "Không xử lý được PDF. Hãy thử lại."))
+        if not verdict_sent:
+            await _finish_status(progress, message,
+                                 Result("REVIEW", "Đã hủy xử lý PDF theo yêu cầu."))
+        # Cancelling optional photos preserves the completed OCR decision.
+    except Exception as error:
+        log.error("PDF processing failed: error_type=%s", type(error).__name__)
+        if not verdict_sent:
+            await _finish_status(progress, message,
+                                 result or Result("REVIEW", "Không xử lý được PDF. Hãy thử lại."))
     finally:
         if acquired:
             semaphore.release()
         active_jobs.pop(user_id, None)
-        # Public access must have a bounded per-user cooldown cache.
         if len(last_seen) > 2000:
             cutoff = time.monotonic() - max(60, COOLDOWN_SEC)
             for uid, seen in list(last_seen.items()):
@@ -232,7 +261,6 @@ async def show_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await context.bot.send_media_group(chat_id=query.message.chat.id, media=album)
     except Exception as exc:
         log.warning("Sending proof album failed: type=%s", type(exc).__name__)
-        # Graceful fallback to one stamp photo, not a silent failure.
         try:
             one = BytesIO(photos[0].data)
             one.name = "bang-chung-dau.jpg"
@@ -283,7 +311,6 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, pdf))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, other))
     log.info("Starting Telegram PDF OCR bot (access_mode=%s)", ACCESS_MODE)
-    # Inline buttons produce callback_query updates, not message updates.
     app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query"])
 
 
