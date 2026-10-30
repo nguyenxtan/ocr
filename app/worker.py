@@ -1,7 +1,7 @@
 """Isolated local subprocess for CPU-heavy PDF/OCR work.
 
-A Telegram user controls PDF bytes, so timeout the *process* rather than merely
-cancelling an asyncio thread. The worker prints only one compact JSON object.
+A Telegram user controls PDF bytes, so timeout the process rather than merely
+cancelling a thread. Stdout carries only an explicitly framed result object.
 """
 from __future__ import annotations
 
@@ -12,15 +12,14 @@ from pathlib import Path
 import sys
 
 from app.analysis import analyze_pdf
+from app.paddle_gateway import paddle_request_budget
 
 
 def restrict_resources() -> None:
     if sys.platform != "linux":
         return
     import resource
-    # RLIMIT_AS is not a safe bound for OpenCV: shared libraries reserve large
-    # virtual ranges while using little RAM, triggering false out-of-memory.
-    # The Docker cgroup in compose.yaml limits actual RAM to 2 GiB.
+    # OpenCV reserves large virtual ranges; Compose limits actual RAM instead.
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     max_cpu = int(os.getenv("WORKER_CPU_SECONDS", "90"))
     resource.setrlimit(resource.RLIMIT_CPU, (max_cpu, max_cpu + 5))
@@ -34,9 +33,9 @@ def main() -> None:
     path = Path(sys.argv[1])
     pages = int(sys.argv[2])
     languages = sys.argv[3]
-    result = analyze_pdf(path, pages, languages)
+    with paddle_request_budget():
+        result = analyze_pdf(path, pages, languages)
     if len(sys.argv) == 5:
-        # Only temporary output next to the input PDF is permitted.
         target = Path(sys.argv[4])
         if target.resolve() != path.parent.resolve() or not target.is_dir():
             raise SystemExit(2)
@@ -44,7 +43,6 @@ def main() -> None:
             from app.evidence import build_evidence
             build_evidence(path, result, target)
         except Exception as error:
-            # Photo generation is best effort: never change the OCR decision.
             sys.stderr.write(f"Optional evidence failed: {type(error).__name__}\n")
     sys.stdout.write("\nOCR_RESULT_JSON:" + json.dumps(asdict(result), ensure_ascii=False) + "\n")
     sys.stdout.flush()
