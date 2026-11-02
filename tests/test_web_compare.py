@@ -52,3 +52,16 @@ def test_seal_name_fallback_only_when_id_unreadable():
 def test_suspected_signature_does_not_pass():
     d=documents(); d['eport']['fields']['signature']=f('Nghi có', 'uncertain')
     assert compare(d)['conclusion']=='REVIEW'
+
+
+def test_identifier_letters_are_not_silently_discarded():
+    d=documents();d['eport']['fields']['tax_id']=f('ABC0123456789')
+    assert row(compare(d),'tax_id')['status']=='REVIEW'
+
+
+def test_different_readable_company_fails_and_blurred_seal_reviews():
+    d=documents();d['eport']['fields']['company_vi']=f('CONG TY BETA')
+    assert row(compare(d),'company')['status']=='FAIL'
+    d=documents();d['eport']['fields']['seal']=f('Nghi có','uncertain');d['eport']['fields']['seal_tax_id']=f('','missing');d['eport']['fields']['seal_company']=f('','uncertain')
+    assert row(compare(d),'seal_identity')['status']=='REVIEW'
+    assert row(compare(d),'seal')['status']=='REVIEW'

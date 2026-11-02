@@ -10,11 +10,12 @@ import time
 import unicodedata
 
 import fitz
+import cv2
 import numpy as np
 from app.fields import normalize
-from app.analysis import render_page, detect_stamps, tax_code_valid
+from app.analysis import render_page, detect_stamps, tax_code_valid, red_mask
 from app.seal_ocr import read_seal
-from app.signatories import ocr_lines, signer_from_lines, OCRLine, OCRWord
+from app.signatories import ocr_lines, signature_anchors, candidate_from_line, OCRLine, OCRWord
 
 LABELS = {
     'company_vi': 'Tên doanh nghiệp (VN)', 'company_en': 'Tên doanh nghiệp (EN)',
@@ -44,7 +45,7 @@ def compact(value):
 
 def normalize_value(key, value):
     if key in ('tax_id','registration_id','seal_tax_id'):
-        return re.sub(r'[^0-9]', '', value)
+        return re.sub(r'[\s.\-]', '', value).upper()
     return compact(value)
 
 
@@ -58,9 +59,10 @@ def classify(text):
 def usable_text(text):
     if len(text.strip()) < 45:
         return False
-    bad = text.count('\ufffd') + len(re.findall(r'\(cid:\d+\)', text)) * 8
+    bad = text.count('\ufffd') + len(re.findall(r'\(cid:\d+\)', text)) * 8 + sum(ord(c)<32 and not c.isspace() for c in text)
     good = sum(c.isalpha() for c in text)
-    return bad / max(1,len(text)) < .03 and good / max(1,len(text)) > .35
+    known = set(compact(text).split()) & set('TEN MA SO NGUOI CONG TY CHU GIAY DANG KY DOANH NGHIEP CHUNG NHAN HO VA PHAP LUAT EPORT PORT THONG TIN THE COMPANY NAME REGISTRATION CERTIFICATE INVOICE TAX'.split())
+    return bad / max(1,len(text)) < .03 and good / max(1,len(text)) > .35 and len(known)>=3
 
 
 def region(page, box):
@@ -100,20 +102,20 @@ def read_pages(doc, lang):
     pages=[]; all_rows=[]; images={}
     for number,page in enumerate(doc,1):
         original_rotation=page.rotation
-        page.set_rotation(0)
         width,height=page.rect.width,page.rect.height
         if width<=0 or height<=0 or width*height > 24_000_000:
             raise ValueError('Kích thước trang PDF vượt giới hạn.')
         words_raw=page.get_text('words', sort=True)
-        text=' '.join(w[4] for w in words_raw)
+        text=page.get_text('text')
         if usable_text(text):
-            words=[{'text':w[4],'box':[w[0]/width,w[1]/height,w[2]/width,w[3]/height], 'confidence':None} for w in words_raw]
+            nw,nh=page.cropbox.width,page.cropbox.height
+            words=[{'text':w[4],'box':[w[0]/nw,w[1]/nh,w[2]/nw,w[3]/nh], 'confidence':None} for w in words_raw]
             method='text'
         else:
             rgb=render_page(page); images[number]=rgb
             try:
                 lines=ocr_lines(rgb,lang,3)
-            except (RuntimeError, Exception) as exc:
+            except Exception:
                 # Do not include OCR stderr (can contain paths or document data).
                 raise ValueError('OCR không xử lý được trang. Kiểm tra Tesseract và ngôn ngữ.') from None
             ih,iw=rgb.shape[:2]
@@ -122,7 +124,14 @@ def read_pages(doc, lang):
         # Discard out-of-crop words, clamp tiny floating point overflow.
         words=[{**w,'box':[max(0,min(1,x)) for x in w['box']]} for w in words if w['box'][2]>0 and w['box'][3]>0 and w['box'][0]<1 and w['box'][1]<1]
         words=[w for w in words if w['box'][0]<w['box'][2] and w['box'][1]<w['box'][3]]
-        rows=rows_from_words(words,number); all_rows.extend(rows)
+        rows=rows_from_words(words,number)
+        if method=='text' and original_rotation:
+            def rotated_box(box):
+                rect=fitz.Rect(box[0]*nw,box[1]*nh,box[2]*nw,box[3]*nh)*page.rotation_matrix
+                return [rect.x0/width,rect.y0/height,rect.x1/width,rect.y1/height]
+            for word in words: word['box']=rotated_box(word['box'])
+            for row in rows: row['region']=source(row['words'],number)
+        all_rows.extend(rows)
         pages.append({'number':number,'width':width,'height':height,'rotation':original_rotation,'method':method})
     return pages, all_rows, images
 
@@ -145,7 +154,7 @@ def candidate(row,start,end=None):
     words=[w for s,e,w in row['spans'] if e>a and s<b]
     if not words: return None
     confs=[w['confidence'] for w in words if w['confidence'] is not None]
-    status='uncertain' if confs and min(confs)<75 else 'read'
+    status='uncertain' if confs and min(confs)<85 else 'read'
     return {'value':text,'regions':[source(words,row['page'])],'status':status}
 
 
@@ -153,14 +162,20 @@ def add_field(fields,key,c):
     if not c: return
     f=fields[key]; n=normalize_value(key,c['value'])
     if not n: return
-    if n not in [normalize_value(key,v['value']) for v in f['candidates']]:
-        f['candidates'].append(c)
-    elif c['regions'] not in [v['regions'] for v in f['candidates']]:
-        f['regions'].extend(c['regions'])
-    if len(f['candidates'])>1:
-        f['status']='ambiguous'; f['regions']=[r for v in f['candidates'] for r in v['regions']]
+    existing=next((v for v in f['candidates'] if normalize_value(key,v['value'])==n),None)
+    if existing:
+        for r in c['regions']:
+            if r not in existing['regions']: existing['regions'].append(r)
+        if c['status']=='uncertain': existing['status']='uncertain'
     else:
-        f.update(raw=c['value'],value=c['value'],normalized=n,status=c['status'],regions=c['regions'])
+        f['candidates'].append(c)
+    f['regions']=[r for v in f['candidates'] for r in v['regions']]
+    if len(f['candidates'])>1:
+        f['status']='ambiguous'
+    else:
+        picked=f['candidates'][0]
+        f.update(raw=picked['value'],value=picked['value'],normalized=n,status=picked['status'])
+
 
 
 def extract_fields(rows,kind):
@@ -172,7 +187,7 @@ def extract_fields(rows,kind):
             if re.search(r'^(?:\d+\s*)?(?:THONG TIN VE )?CHU SO HUU\b',canon): context='owner'
             if re.search(r'^(?:\d+\s*)?(?:THONG TIN VE )?NGUOI DAI DIEN (?:THEO )?PHAP LUAT\b',canon): context='legal_rep'
             if context:
-                match=re.search(r'(?:HO(?:,|\s)*VA TEN|HO TEN)\s*[:.]?\s*',n)
+                match=re.search(r'(?:HO(?:,?\s*CHU DEM)?\s*(?:VA\s*)?TEN)\s*[:.]?\s*',n)
                 if match:
                     start=indices[match.end()-1]+1
                     stop=STOP.search(n,match.end()); end=indices[stop.start()] if stop else len(row['text'])
@@ -185,7 +200,7 @@ def extract_fields(rows,kind):
             if key=='company_vi' and any(x in canon for x in ('TIENG NUOC NGOAI','TIENG ANH','TEN VIET TAT','VIET TAT')): continue
             start=indices[match.end()-1]+1
             stop=STOP.search(n,match.end()); end=indices[stop.start()] if stop else len(row['text'])
-            c=candidate(row,start,end)
+            c=candidate(row,start,end); value_row_index=i
             if key in ('tax_id','registration_id') and c:
                 m=re.search(r'(?<!\d)\d[\d .-]{7,17}\d(?!\d)',c['value'])
                 if not m: c=None
@@ -197,18 +212,57 @@ def extract_fields(rows,kind):
                 # Only adjacent visual rows, and never consume another field label.
                 gap=nxt['region']['box'][1]-row['region']['box'][3]
                 if 0<=gap<.025 and not STOP.search(fold_map(nxt['text'])[0]):
-                    c=candidate(nxt,0)
+                    c=candidate(nxt,0); value_row_index=i+1
             if c and key.startswith('company'):
                 # Continue wrapped company names only at the same left margin.
-                current=row
-                for nxt in rows[i+1:i+3]:
+                current=rows[value_row_index]
+                for nxt in rows[value_row_index+1:value_row_index+3]:
                     if nxt['page']!=row['page'] or STOP.search(fold_map(nxt['text'])[0]): break
                     box=nxt['region']['box']; cb=current['region']['box']
-                    if not (0<=box[1]-cb[3]<.018 and abs(box[0]-c['regions'][0]['box'][0])<.06): break
+                    if not (0<=box[1]-cb[3]<.018 and min(abs(box[0]-c['regions'][0]['box'][0]),abs(box[0]-row['region']['box'][0]))<.06): break
                     if not re.fullmatch(r'[A-Z0-9 &.,()\-/]+',fold_map(nxt['text'])[0]): break
+                    continuation=candidate(nxt,0)
                     c['value']+=' '+nxt['text']; c['regions'].append(nxt['region']); current=nxt
+                    if continuation and continuation['status']=='uncertain': c['status']='uncertain'
+            if c and key in ('tax_id','registration_id') and len(normalize_value(key,c['value'])) not in (10,13): c=None
             add_field(fields,key,c)
     return fields
+
+
+def signature_ink_regions(rgb, rows):
+    """Locate unrecognized ink near signing titles; never claims authenticity/presence.
+
+    Printed OCR words, red seal ink, and long form rules are removed. Remaining
+    joined strokes are only candidates for human review; blue text/noise may remain.
+    """
+    ih,iw=rgb.shape[:2]
+    gray=cv2.cvtColor(rgb,cv2.COLOR_RGB2GRAY)
+    ink=cv2.inRange(gray,0,175)
+    ink[red_mask(rgb)>0]=0
+    for row in rows:
+        for word in row['words']:
+            x0,y0,x1,y1=word['box']
+            ink[max(0,int(y0*ih)-2):min(ih,int(y1*ih)+3),max(0,int(x0*iw)-2):min(iw,int(x1*iw)+3)]=0
+    for kernel in ((max(20,iw//12),1),(1,max(20,ih//12))):
+        lines=cv2.morphologyEx(ink,cv2.MORPH_OPEN,np.ones(kernel[::-1],np.uint8))
+        ink=cv2.subtract(ink,lines)
+    result=[]
+    for row in rows:
+        n=compact(row['text'])
+        if not (n.startswith(('DAI DIEN DOANH NGHIEP','DAI DIEN KHACH HANG','NGUOI KY')) or n in ('GIAM DOC','TONG GIAM DOC','CHU TICH')): continue
+        x0,y0,x1,y1=row['region']['box']; cx=(x0+x1)/2
+        left=max(0,int((cx-.22)*iw));right=min(iw,int((cx+.22)*iw))
+        top=int(y1*ih);bottom=min(ih,int((y1+.22)*ih))
+        window=ink[top:bottom,left:right]
+        if not window.size: continue
+        joined=cv2.morphologyEx(window,cv2.MORPH_CLOSE,np.ones((3,7),np.uint8))
+        contours,_=cv2.findContours(joined,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            x,y,w,h=cv2.boundingRect(contour)
+            count=cv2.countNonZero(window[y:y+h,x:x+w])
+            if w>iw*.035 and h>ih*.012 and count>40 and count/(w*h)<.55:
+                result.append([(left+x)/iw,(top+y)/ih,(left+x+w)/iw,(top+y+h)/ih])
+    return result[:8]
 
 
 def inspect_marks(doc,pages,rows,images,fields,lang):
@@ -217,14 +271,26 @@ def inspect_marks(doc,pages,rows,images,fields,lang):
         number=p['number']; width,height=p['width'],p['height']
         page_rows=[r for r in rows if r['page']==number]
         lines=[OCRLine(tuple(OCRWord(w['text'],round(w['box'][0]*width),round(w['box'][1]*height),max(1,round((w['box'][2]-w['box'][0])*width)),max(1,round((w['box'][3]-w['box'][1])*height)),w['confidence'] if w['confidence'] is not None else 100) for w in r['words'])) for r in page_rows]
-        signed=signer_from_lines(lines,round(width),round(height))
-        if signed:
-            found=[r for r in page_rows if compact(signed[0])==compact(r['text'])]
-            if found:
-                signer_candidates.append({'value':signed[0],'regions':[found[0]['region']],'status':'read' if signed[1]>=85 else 'uncertain'})
+        # Preserve the selected row identity, never rematch a repeated name globally.
+        anchors=signature_anchors(lines); selected_candidates=[]
+        for anchor in anchors:
+            cx=(anchor.x+anchor.right)/2
+            for line,row in zip(lines,page_rows):
+                if anchor.y<height*.12 or not 0<=line.y-anchor.bottom<=height*.26: continue
+                if abs((line.x+line.right)/2-cx)>width*.22: continue
+                picked=candidate_from_line(line)
+                if picked:
+                    name,confidence=picked
+                    rank=confidence-(line.y-anchor.bottom)/height*30
+                    selected_candidates.append((rank,name,confidence,row))
+        if selected_candidates:
+            _,name,confidence,row=max(selected_candidates,key=lambda item:item[0])
+            signer_candidates.append({'value':name,'regions':[row['region']],'status':'read' if confidence>=85 else 'uncertain'})
         rgb=images.get(number)
         if rgb is None: rgb=render_page(doc[number-1])
         ih,iw=rgb.shape[:2]
+        for box in signature_ink_regions(rgb,page_rows):
+            add_field(fields,'signature',{'value':'Nghi có','regions':[region(number,box)],'status':'uncertain'})
         for score,mask,box in detect_stamps(rgb,with_boxes=True):
             if score<.45: continue
             r=region(number,[box[0]/iw,box[1]/ih,box[2]/iw,box[3]/ih])
@@ -233,8 +299,10 @@ def inspect_marks(doc,pages,rows,images,fields,lang):
     for c in signer_candidates: add_field(fields,'signer',c)
     # Presence of handwritten strokes cannot safely be proved by printed names.
     # Leave signature missing until human review rather than inventing a verdict.
+    if seals:
+        best=max(seals,key=lambda item:item[0]); score=best[0]
+        add_field(fields,'seal',{'value':'Có' if score>=.68 else 'Nghi có','regions':[r for _,r,_ in seals],'status':'read' if score>=.68 else 'uncertain'})
     for score,r,e in seals:
-        add_field(fields,'seal',{'value':'Có' if score>=.68 else 'Nghi có','regions':[r],'status':'read' if score>=.68 else 'uncertain'})
         if e.variants:
             text=' | '.join(dict.fromkeys(t for t in e.variants if t.strip()))
             add_field(fields,'seal_text',{'value':text,'regions':[r],'status':'uncertain'})

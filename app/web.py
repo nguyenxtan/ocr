@@ -12,7 +12,7 @@ import time
 from urllib.parse import urlsplit, unquote
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,7 @@ class Region(BaseModel):
 
 
 class Edit(BaseModel):
+    document_id:str=Field(min_length=32,max_length=32)
     value:str=Field(max_length=3000)
     regions:list[Region]=Field(max_length=20)
     revision:int=Field(ge=1)
@@ -90,6 +91,8 @@ def create_app(root=None, timeout=None, ttl=None):
         if sum(not t.done() for t in store.tasks.values())>=store.queue_size+1:
             raise HTTPException(429,'Hàng đợi đầy. Hãy chờ hoặc hủy tác vụ đang có.')
         store.active_uploads.add(key)
+        await store.cancel(s,kind,True)
+        generation=s['generations'][kind]
         directory=s['path']/secrets.token_hex(16); directory.mkdir(mode=0o700); path=directory/'input.pdf'
         accepted=False
         try:
@@ -107,8 +110,10 @@ def create_app(root=None, timeout=None, ttl=None):
                 if not stream.read(1024).lstrip().startswith(b'%PDF-'): raise HTTPException(422,'Nội dung không phải PDF hợp lệ.')
             async with store.preview:
                 await store.command('validate',path,directory/'validation.json',20,timeout=15)
-            # Only valid replacement bytes remove the old result; a failed upload is explicit.
-            await store.cancel(s,kind,True)
+            if store.session(s['token']) is not s:
+                raise HTTPException(401,'Phiên đã hết hạn trong lúc tải file.')
+            if s['generations'].get(kind)!=generation:
+                raise HTTPException(409,'Tác vụ tải đã bị hủy hoặc hồ sơ đã thay đổi.')
             d={'id':directory.name,'revision':1,'name':unquote(request.headers.get('x-file-name','document.pdf'))[:200], 'size':size,'state':'queued','detected_kind':'unknown','path':path}
             await store.enqueue(s,kind,d); accepted=True
             return store.public(s)
@@ -134,19 +139,23 @@ def create_app(root=None, timeout=None, ttl=None):
     async def page_image(kind:str,doc_id:str,page:int,request:Request):
         s,d=document(request,kind)
         if d['id']!=doc_id or d['state']!='ready' or not 1<=page<=len(d['pages']): raise HTTPException(404,'Trang không còn trong hồ sơ hiện tại.')
+        started=time.monotonic()
         output=d['path'].parent/f'page-{page}.png'
         async with request.app.state.store.preview:
             if not output.exists():
                 try: await request.app.state.store.command('page',d['path'],output,page,timeout=20)
                 except (ValueError,TimeoutError): raise HTTPException(422,'Không tạo được ảnh trang PDF.') from None
-        if s['documents'].get(kind) is not d: raise HTTPException(404,'Hồ sơ đã thay đổi.')
-        return FileResponse(output,media_type='image/png')
+            if s['documents'].get(kind) is not d: raise HTTPException(404,'Hồ sơ đã thay đổi.')
+            try: data=output.read_bytes()
+            except OSError: raise HTTPException(404,'Hồ sơ đã thay đổi.') from None
+            request.app.state.store.trim_cache(output)
+        return Response(data,media_type='image/png',headers={'Server-Timing':f'render;dur={(time.monotonic()-started)*1000:.1f}'})
 
     @app.patch('/api/fields/{kind}/{key}')
     async def edit(kind:str,key:str,body:Edit,request:Request):
         s,d=document(request,kind)
         if d['state']!='ready' or key not in d['fields']: raise HTTPException(404,'Không tìm thấy trường dữ liệu.')
-        if body.revision!=d['revision']: raise HTTPException(409,'Hồ sơ đã thay đổi. Tải lại dữ liệu trước khi sửa.')
+        if body.document_id!=d['id'] or body.revision!=d['revision']: raise HTTPException(409,'Hồ sơ đã thay đổi. Tải lại dữ liệu trước khi sửa.')
         if not body.regions: raise HTTPException(422,'Chọn ít nhất một vùng nguồn cho chỉnh sửa.')
         if len(d['fields'][key]['history'])>=100: raise HTTPException(422,'Đã đạt giới hạn 100 chỉnh sửa cho trường này.')
         for r in body.regions:
@@ -166,7 +175,7 @@ def create_app(root=None, timeout=None, ttl=None):
         if not all((d:=s['documents'].get(k)) and d['state']=='ready' and d['detected_kind']==k for k in ('gpkd','eport')):
             raise HTTPException(409,'Cần đủ hai PDF đúng loại và xử lý xong trước khi đối chiếu.')
         result=compare(s['documents'])
-        result['documents']={k:{'name':d['name'],'revision':d['revision'],'timings':d['timings'],'fields':d['fields']} for k,d in s['documents'].items()}
+        result['documents']={k:{'id':d['id'],'name':d['name'],'revision':d['revision'],'timings':d['timings'],'fields':d['fields']} for k,d in s['documents'].items()}
         headers={'Content-Disposition':'attachment; filename="doi-chieu.json"'} if download else {}
         return JSONResponse(result,headers=headers)
 

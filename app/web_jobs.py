@@ -18,9 +18,15 @@ class Busy(Exception): pass
 
 class Store:
     def __init__(self, root=None, timeout=180, ttl=1800, max_sessions=8, queue_size=3):
-        self.root=Path(tempfile.mkdtemp(prefix='ocr-web-',dir=root)); self.root.chmod(0o700)
+        parent=Path(root or tempfile.gettempdir())
+        for stale in parent.glob('ocr-pair-web-*'):
+            if not stale.is_symlink() and stale.is_dir() and (stale/'.ocr-web-root').is_file():
+                if stale.stat().st_uid==os.getuid() and stale.stat().st_mtime<time.time()-max(ttl,3600):
+                    shutil.rmtree(stale,ignore_errors=True)
+        self.root=Path(tempfile.mkdtemp(prefix='ocr-pair-web-',dir=parent)); self.root.chmod(0o700)
+        (self.root/'.ocr-web-root').write_text('v1')
         self.timeout=timeout; self.ttl=ttl; self.max_sessions=max_sessions; self.queue_size=queue_size
-        self.sessions={}; self.tasks={}; self.work=asyncio.Semaphore(1); self.preview=asyncio.Semaphore(2)
+        self.sessions={}; self.tasks={}; self.work=asyncio.Semaphore(1); self.preview=asyncio.Semaphore(1)
         self.active_uploads=set(); self.janitor=None
 
     def session(self, token):
@@ -30,7 +36,7 @@ class Store:
     def new(self):
         if len(self.sessions)>=self.max_sessions: raise Busy()
         token=secrets.token_urlsafe(32); directory=self.root/token; directory.mkdir(mode=0o700)
-        s={'token':token,'path':directory,'expires':time.time()+self.ttl,'documents':{}}
+        s={'token':token,'path':directory,'expires':time.time()+self.ttl,'documents':{},'generations':{}}
         self.sessions[token]=s; return s
 
     def public(self,s):
@@ -55,6 +61,7 @@ class Store:
         return result
 
     async def cancel(self,s,kind,remove=False):
+        s['generations'][kind]=s['generations'].get(kind,0)+1
         key=(s['token'],kind); task=self.tasks.get(key)
         if task:
             task.cancel()
@@ -87,6 +94,14 @@ class Store:
             finally:
                 if self.tasks.get(key) is asyncio.current_task(): self.tasks.pop(key,None)
         self.tasks[key]=asyncio.create_task(execute())
+
+    def trim_cache(self,keep,limit=64*1024*1024):
+        files=sorted(self.root.glob('*/*/page-*.png'),key=lambda p:p.stat().st_mtime)
+        total=sum(p.stat().st_size for p in files)
+        for p in files:
+            if total<=limit: break
+            if p!=keep:
+                total-=p.stat().st_size; p.unlink(missing_ok=True)
 
     async def cleanup(self):
         for token,s in list(self.sessions.items()):

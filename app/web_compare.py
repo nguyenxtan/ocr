@@ -1,4 +1,5 @@
 """Conservative comparisons; absence, ambiguity and OCR uncertainty never match."""
+import re
 from app.web_extract import compact, normalize_value
 from app.seal_ocr import strict_name_match
 
@@ -18,7 +19,7 @@ def compare(documents):
             av,bv=a['value'],b['value']
             if mode=='id':
                 av,bv=normalize_value('tax_id',av),normalize_value('tax_id',bv)
-                valid=len(av) in (10,13) and len(bv) in (10,13)
+                valid=bool(re.fullmatch(r'(?:[0-9]{10}|[0-9]{13})',av) and re.fullmatch(r'(?:[0-9]{10}|[0-9]{13})',bv))
                 same=av==bv
             else:
                 valid=True; same=compact(av)==compact(bv)
