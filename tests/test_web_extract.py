@@ -143,3 +143,9 @@ def test_faded_seal_is_unknown_not_absence_or_presence(tmp_path):
     result=extract(tmp_path/'faded.pdf','eport')
     assert result['fields']['seal']['status']=='missing'
     assert result['fields']['seal']['value']==''
+
+
+def test_table_rule_artifacts_and_title_cell_not_person_name(tmp_path):
+    d=extract(pdf(tmp_path,['BAN DANG KY SU DUNG EPORT\nTen doanh nghiep: _ CONG TY ALPHA\nDai dien co tham quyen: NGUYEN VAN AN Chuc | Giam Doc']), 'eport',marks=False)
+    assert d['fields']['company_vi']['value']=='CONG TY ALPHA'
+    assert d['fields']['authorized_rep']['value']=='NGUYEN VAN AN'

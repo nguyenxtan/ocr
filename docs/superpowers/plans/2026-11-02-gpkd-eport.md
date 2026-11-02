@@ -20,25 +20,29 @@ No sensitive sample content in Git/logs. No hardcoded company, tax ID, page or b
 ### Task 1: Sourced extraction and comparison
 Files: app/web_extract.py, app/web_compare.py, tests/test_web_extract.py, tests/test_web_compare.py.
 Interfaces: extract(path, kind) -> document dict; classify(lines) -> kind; compare(documents) -> report dict.
-- [ ] Write/run failing tests for classification by content, missing fields, multipage provenance, owner/legal separation, MST contradiction, authorization review, unreadable seal.
-- [ ] Implement canonical word/line extraction, labeled fields, seal/signatory reuse and conservative comparison.
-- [ ] Run new tests and existing Telegram suite; commit.
+- [x] Write/run failing tests for classification by content, missing fields, multipage provenance, owner/legal separation, MST contradiction, authorization review, unreadable seal.
+- [x] Implement canonical word/line extraction, labeled fields, seal/signatory reuse and conservative comparison.
+- [x] Run new tests and existing Telegram suite; commit.
 
 ### Task 2: Session API and jobs
 Files: app/web.py, app/web_jobs.py, requirements-web.txt, tests/test_web_api.py.
 Interfaces: /api/session, /api/documents/{kind}, /api/jobs, /api/fields/{kind}/{key}, /api/report, scoped /api/pages.
-- [ ] Write/run failing API tests: invalid/password/oversize/wrong type, isolation, replacement/delete invalidation, edits/history and invalid boxes.
-- [ ] Implement bounded streamed upload, private session lifecycle, queue/cancel/deadline and revision-aware results; page rendering on demand after result.
-- [ ] Run API and full pytest; commit.
+- [x] Write/run failing API tests: invalid/password/oversize/wrong type, isolation, replacement/delete invalidation, edits/history and invalid boxes.
+- [x] Implement bounded streamed upload, private session lifecycle, queue/cancel/deadline and revision-aware results; page rendering on demand after result.
+- [x] Run API and full pytest; commit.
 
 ### Task 3: Three-screen UI
 Files: app/static/index.html, app/static/style.css, app/static/app.js, tests/browser.mjs, package.json.
-- [ ] Write browser checks for upload, step gates, field/region links, edit, zoom/rotation, comparison, replacement and invalid PDF.
-- [ ] Implement white/purple UI with real API and SVG coordinates; no mock results.
-- [ ] Run browser against sample PDFs, inspect screenshot; commit.
+- [x] Write browser checks for upload, step gates, field/region links, edit, zoom/rotation, comparison, replacement and invalid PDF.
+- [x] Implement white/purple UI with real API and SVG coordinates; no mock results.
+- [x] Run browser against sample PDFs, inspect screenshot; commit.
 
 ### Task 4: Delivery and acceptance
 Files: README.md, .env.example, Dockerfile.web, compose.web.yaml, benchmarks/web_compare.py, docs/web-validation.md.
-- [ ] Add isolated web Docker service, configuration, limits and run instructions.
-- [ ] Measure old/new on identical samples without persisting content; run Telegram regression, browser suite and Docker build.
-- [ ] Review code, fix important findings with regression tests; record evidence and remaining limitations; commit on feature branch. Merge only if acceptance is satisfied.
+- [x] Add isolated web Docker service, configuration, limits and run instructions.
+- [x] Measure old/new on identical samples without persisting content; run Telegram regression, browser suite and Docker build.
+- [x] Review code, fix important findings with regression tests; record evidence and remaining limitations; commit on feature branch. Merge only if acceptance is satisfied.
+
+## Execution record
+
+Tasks 1–4 implemented in commits on feature branch. Independent review: five Important findings fixed with regression coverage. Full validation and known limitations: `docs/web-validation.md`. Main intentionally not merged; no customer PDFs or extracted values committed.

@@ -143,12 +143,12 @@ ALIASES={
  'registration_id':[r'(?:SO )?GIAY (?:DKKD|DK KINH DOANH|DANG KY KINH DOANH)\s*[:.]?',r'SO DKKD\s*[:.]?'],
  'authorized_rep':[r'DAI DIEN CO THAM QUYEN(?:\s*\(.*?\))?\s*[:.]?',r'HO TEN NGUOI DAI DIEN\s*[:.]?'],
 }
-STOP = re.compile(r'\b(?:DIEN THOAI|FAX|NGAY CAP|NOI CAP|CHUC VU|CHUC DANH|GIOI TINH|QUOC TICH|NGAY SINH|SO CMND|SO CCCD|SO DINH DANH|NGAY.{0,12}SINH|SO HO CHIEU|DIA CHI|MA SO|TEN VIET TAT|TEN CONG TY|TEN DOANH NGHIEP|MST|EMAIL|DANG KY LAN|THU DIEN TU)\b')
+STOP = re.compile(r'\b(?:DIEN THOAI|FAX|NGAY CAP|NOI CAP|CHUC VU|CHUC DANH|CHUC(?=\s*[|/])|GIOI TINH|QUOC TICH|NGAY SINH|SO CMND|SO CCCD|SO DINH DANH|NGAY.{0,12}SINH|SO HO CHIEU|DIA CHI|MA SO|TEN VIET TAT|TEN CONG TY|TEN DOANH NGHIEP|MST|EMAIL|DANG KY LAN|THU DIEN TU)\b')
 
 
 def candidate(row,start,end=None):
     end=len(row['text']) if end is None else end
-    text=row['text'][start:end].strip(' :;.-|')
+    text=row['text'][start:end].strip(' :;.-|_')
     if not text: return None
     a=row['text'].find(text,start,end); b=a+len(text)
     words=[w for s,e,w in row['spans'] if e>a and s<b]

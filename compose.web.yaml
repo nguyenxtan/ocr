@@ -1,0 +1,26 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OCR_LANG: ${OCR_LANG:-vie+eng}
+      WEB_SESSION_TTL_SEC: ${WEB_SESSION_TTL_SEC:-1800}
+      WEB_JOB_TIMEOUT_SEC: ${WEB_JOB_TIMEOUT_SEC:-180}
+      WEB_MAX_SESSIONS: ${WEB_MAX_SESSIONS:-8}
+      WEB_QUEUE_SIZE: ${WEB_QUEUE_SIZE:-3}
+      WEB_SECURE_COOKIE: ${WEB_SECURE_COOKIE:-0}
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped

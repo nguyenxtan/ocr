@@ -14,6 +14,9 @@ try {
   if(!process.env.GPKD_PDF||!process.env.EPORT_PDF) throw new Error('Set GPKD_PDF and EPORT_PDF to test PDFs');
   await page.locator('#file-gpkd').setInputFiles(process.env.GPKD_PDF);
   await page.locator('[data-kind="gpkd"] .badge.ready').waitFor({timeout:240000});
+  await page.locator('#file-eport').setInputFiles(process.env.GPKD_PDF);
+  await page.locator('[data-kind="eport"] .badge.wrong').waitFor({timeout:240000});
+  assert(await page.locator('#continue-upload').isDisabled());
   await page.locator('#file-eport').setInputFiles(process.env.EPORT_PDF);
   await page.locator('[data-kind="eport"] .badge.ready').waitFor({timeout:240000});
   await mkdir('test-results',{recursive:true});
@@ -49,6 +52,18 @@ try {
   const saved=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd.fields.tax_id.regions[0].box);
   assert(saved.every((v,i)=>Math.abs(v-coordinates.expected[i])<.002));
   await page.screenshot({path:'test-results/02-ocr.png',fullPage:true});
+  // A delayed pre-edit report must not replace the edited OCR screen.
+  let releaseReport, markReport;
+  const holdReport=new Promise(r=>releaseReport=r), reportCaptured=new Promise(r=>markReport=r);
+  await page.route('**/api/report',async route=>{const response=await route.fetch();markReport();await holdReport;await route.fulfill({response});});
+  await page.locator('#continue-compare').click();await reportCaptured;
+  await page.locator('#edit-reason').fill('Concurrent edit invalidates pending report');
+  await page.locator('#save-edit').click();
+  await page.locator('#history').filter({hasText:'Concurrent edit invalidates pending report'}).waitFor({state:'attached'});
+  const revalidated=page.waitForResponse(r=>r.url().endsWith('/api/session')&&r.request().method()==='GET');
+  releaseReport();await revalidated;
+  assert(await page.locator('#screen-ocr').isVisible());
+  await page.unroute('**/api/report');
   await page.locator('#continue-compare').click();
   await page.locator('#screen-compare:not([hidden])').waitFor();
   await page.locator('[data-check="tax_id"]').click();
@@ -65,5 +80,6 @@ try {
   assert.deepEqual(errors,[]);
   console.log('Browser: upload validation, 3 screens, source selection, zoom/rotation, edit/history, compare, export and removal PASS');
 } finally {
+  await context.request.delete((process.env.WEB_URL||'http://127.0.0.1:8000')+'/api/session').catch(()=>{});
   await context.close(); await browser.close();
 }

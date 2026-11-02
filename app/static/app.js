@@ -45,7 +45,6 @@ async function upload(k,file){
   if(session.documents[k])await api(`/api/documents/${k}`,{method:'DELETE'});
   delete session.documents[k];renderUpload();
   if(file.size>20*1024*1024)throw new Error('PDF vượt giới hạn 20 MB.');
-  if(!/\.pdf$/i.test(file.name))throw new Error('Chỉ nhận file PDF.');
   session=await api(`/api/documents/${k}`,{method:'PUT',headers:{'Content-Type':'application/pdf','X-File-Name':encodeURIComponent(file.name)},body:file});
  }catch(e){alertMessage(e.message);}finally{inflight.delete(k);renderUpload();schedulePoll();}
 }
