@@ -47,7 +47,7 @@ Rà soát độc lập lần 2 (4 lỗi Important, có ca hồi quy trong `tests
 
 Đã xử lý tiếp các vấn đề bằng chứng: lớp chữ có chế độ ẩn, độ trong suốt, chữ trắng hoặc bị hình/chữ nhật che phủ chuyển sang OCR ảnh trang; PDF chữ hiển thị bình thường vẫn đọc lớp chữ. Đây là kiểm tra hiển thị bảo thủ, không là xác thực nội dung PDF. Xác nhận chữ ký/con dấu bắt chọn một vị trí hoặc vẽ lại; vùng tên công ty xuống dòng vẫn được giữ nhiều khung. Vùng đang chọn có viền riêng và theo cùng phép zoom/xoay. Nút tải JSON xuất bản báo cáo đã hiển thị, có ca sửa dữ liệu sau khi hiển thị rồi kiểm tra bản tải xuống vẫn giữ đúng phiên bản cũ.
 
-Claude đã review và chỉ ra các lỗi, đồng thời đã viết một phần sửa trước khi người dùng giới hạn vai trò. Theo yêu cầu mới, worker Claude đã được dừng; phần chốt sửa, rà code, build và kiểm thử cuối do agent chính thực hiện. Không gọi Claude thêm để sửa.
+Rà soát độc lập cung cấp các ca tái hiện nêu trên. Bản sửa cuối được agent chính đọc lại, build và chạy kiểm thử trên macOS, Docker Linux và Chromium.
 
 Đã sửa một lỗi kiểm thử browser không ổn định từng xảy ra ở CI: đo tọa độ kéo trước khi nút vẽ làm cuộn trang. Nay lấy tọa độ sau thao tác vẽ/đưa vùng vào khung nhìn; bỏ cuộn trang trễ ở bước chọn trường. Giữ nguyên mức sai số tọa độ 0,002.
 
