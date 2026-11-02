@@ -43,10 +43,21 @@ def compact(value):
     return ' '.join(normalize(value).split())
 
 
+def exact_text(value):
+    """Accent-preserving key: NFC, upper case, punctuation as space, collapsed spaces.
+
+    Unlike compact(), letters with different Vietnamese marks (HÙNG/HƯNG) stay
+    different, and every token, including short tokens and legal type, is kept.
+    """
+    value=unicodedata.normalize('NFC',str(value or '')).upper()
+    value=''.join(' ' if unicodedata.category(c).startswith('P') or c.isspace() else c for c in value)
+    return ' '.join(value.split())
+
+
 def normalize_value(key, value):
     if key in ('tax_id','registration_id','seal_tax_id'):
         return re.sub(r'[\s.\-]', '', value).upper()
-    return compact(value)
+    return exact_text(value)
 
 
 def classify(text):
@@ -65,6 +76,43 @@ def usable_text(text):
     return bad / max(1,len(text)) < .03 and good / max(1,len(text)) > .35 and len(known)>=3
 
 
+def _luminance(color, components):
+    c=[float(v) for v in (color or ())]
+    if components==1 and c: return c[0]
+    if components==4 and len(c)==4:
+        k=c[3]; r,g,b=((1-min(1,v+k)) for v in c[:3])
+    elif len(c)>=3: r,g,b=c[:3]
+    else: return 0.0
+    return .2126*r+.7152*g+.0722*b
+
+
+def hidden_text_layer(page):
+    """True when any text span may not be visible as rendered.
+
+    Distrusted (whole page then goes to OCR of the rendered image): invisible render
+    mode, non-opaque or near-white fill, sub-point size, or text whose box is later
+    fully covered by a filled path, shading or image. Conservative: white-on-dark
+    and searchable scans with an invisible OCR layer are also OCRed. This is a
+    visibility check only; it says nothing about authenticity.
+    """
+    for span in page.get_texttrace():
+        if all(chr(ch[0]).isspace() for ch in span['chars']): continue
+        if span['type']==3 or span['opacity']<.98 or span['size']<1: return True
+        if span['type']==0 and _luminance(span['color'],span['colorspace'])>.9: return True
+    texts=[]; covers=[]
+    for i,(kind,rect) in enumerate(page.get_bboxlog()):
+        if kind.endswith('-text'): texts.append((i,rect))
+        elif kind in ('fill-path','fill-image','fill-shade','fill-imgmask'): covers.append((i,*rect))
+    if not texts or not covers: return False
+    cover=np.array(covers,dtype=float); tol=.75
+    for i,(x0,y0,x1,y1) in texts:
+        if x1<=x0 or y1<=y0: continue
+        later=cover[cover[:,0]>i]
+        if not len(later): continue
+        if np.any((later[:,1]<=x0+tol)&(later[:,2]<=y0+tol)&(later[:,3]>=x1-tol)&(later[:,4]>=y1-tol)): return True
+    return False
+
+
 def region(page, box):
     return {'page': page, 'box': [round(max(0.,min(1.,float(v))),6) for v in box]}
 
@@ -80,22 +128,33 @@ def source(words, page):
 
 
 def rows_from_words(words, page):
+    """Group words into visual lines using layout (content-space) geometry.
+
+    Each word has 'layout' (unrotated content space, used only for parsing) and
+    'box' (displayed page, published as evidence). For unrotated/OCR pages both
+    are equal. Rows expose 'layout' for adjacency checks and 'region' for evidence.
+    """
     groups=[]
-    for w in sorted(words,key=lambda w:(w['box'][1]+w['box'][3],w['box'][0])):
-        center=(w['box'][1]+w['box'][3])/2
-        height=w['box'][3]-w['box'][1]
+    for w in words: w.setdefault('layout',list(w['box']))
+    for w in sorted(words,key=lambda w:(w['layout'][1]+w['layout'][3],w['layout'][0])):
+        center=(w['layout'][1]+w['layout'][3])/2
+        height=w['layout'][3]-w['layout'][1]
         target=next((g for g in reversed(groups[-4:]) if abs(g['cy']-center) < min(g['height'],height)*.50),None)
         if target is None:
             target={'cy':center,'height':height,'words':[]}; groups.append(target)
         target['words'].append(w)
     result=[]
     for group in groups:
-        ws=sorted(group['words'],key=lambda w:w['box'][0]); text=''; spans=[]
+        ws=sorted(group['words'],key=lambda w:w['layout'][0]); text=''; spans=[]
         for w in ws:
             if text: text+=' '
             spans.append((len(text),len(text)+len(w['text']),w)); text+=w['text']
-        result.append({'text':text,'spans':spans,'words':ws,'page':page,'region':source(ws,page)})
+        result.append({'text':text,'spans':spans,'words':ws,'page':page,'region':source(ws,page),'layout':layout_box(ws)})
     return result
+
+
+def layout_box(words):
+    return [min(w['layout'][0] for w in words),min(w['layout'][1] for w in words),max(w['layout'][2] for w in words),max(w['layout'][3] for w in words)]
 
 
 def read_pages(doc, lang):
@@ -107,7 +166,8 @@ def read_pages(doc, lang):
             raise ValueError('Kích thước trang PDF vượt giới hạn.')
         words_raw=page.get_text('words', sort=True)
         text=page.get_text('text')
-        if usable_text(text):
+        # Only visible text is evidence; otherwise read what is rendered.
+        if usable_text(text) and not hidden_text_layer(page):
             nw,nh=page.cropbox.width,page.cropbox.height
             words=[{'text':w[4],'box':[w[0]/nw,w[1]/nh,w[2]/nw,w[3]/nh], 'confidence':None} for w in words_raw]
             method='text'
@@ -124,13 +184,15 @@ def read_pages(doc, lang):
         # Discard out-of-crop words, clamp tiny floating point overflow.
         words=[{**w,'box':[max(0,min(1,x)) for x in w['box']]} for w in words if w['box'][2]>0 and w['box'][3]>0 and w['box'][0]<1 and w['box'][1]<1]
         words=[w for w in words if w['box'][0]<w['box'][2] and w['box'][1]<w['box'][3]]
-        rows=rows_from_words(words,number)
+        # Layout geometry (reading order, next line, wrap) stays in content space;
+        # evidence boxes are mapped to the displayed rotation.
+        for word in words: word['layout']=list(word['box'])
         if method=='text' and original_rotation:
             def rotated_box(box):
                 rect=fitz.Rect(box[0]*nw,box[1]*nh,box[2]*nw,box[3]*nh)*page.rotation_matrix
-                return [rect.x0/width,rect.y0/height,rect.x1/width,rect.y1/height]
-            for word in words: word['box']=rotated_box(word['box'])
-            for row in rows: row['region']=source(row['words'],number)
+                return [max(0,min(1,v)) for v in (rect.x0/width,rect.y0/height,rect.x1/width,rect.y1/height)]
+            for word in words: word['box']=rotated_box(word['layout'])
+        rows=rows_from_words(words,number)
         all_rows.extend(rows)
         pages.append({'number':number,'width':width,'height':height,'rotation':original_rotation,'method':method})
     return pages, all_rows, images
@@ -155,11 +217,12 @@ def candidate(row,start,end=None):
     if not words: return None
     confs=[w['confidence'] for w in words if w['confidence'] is not None]
     status='uncertain' if confs and min(confs)<85 else 'read'
-    return {'value':text,'regions':[source(words,row['page'])],'status':status}
+    return {'value':text,'regions':[source(words,row['page'])],'status':status,'layout_x0':layout_box(words)[0]}
 
 
 def add_field(fields,key,c):
     if not c: return
+    c={k:v for k,v in c.items() if k!='layout_x0'}  # parsing-only geometry is never published
     f=fields[key]; n=normalize_value(key,c['value'])
     if not n: return
     existing=next((v for v in f['candidates'] if normalize_value(key,v['value'])==n),None)
@@ -210,7 +273,7 @@ def extract_fields(rows,kind):
             if c is None and i+1<len(rows) and rows[i+1]['page']==row['page']:
                 nxt=rows[i+1]
                 # Only adjacent visual rows, and never consume another field label.
-                gap=nxt['region']['box'][1]-row['region']['box'][3]
+                gap=nxt['layout'][1]-row['layout'][3]
                 if 0<=gap<.025 and not STOP.search(fold_map(nxt['text'])[0]):
                     c=candidate(nxt,0); value_row_index=i+1
             if c and key.startswith('company'):
@@ -218,8 +281,8 @@ def extract_fields(rows,kind):
                 current=rows[value_row_index]
                 for nxt in rows[value_row_index+1:value_row_index+3]:
                     if nxt['page']!=row['page'] or STOP.search(fold_map(nxt['text'])[0]): break
-                    box=nxt['region']['box']; cb=current['region']['box']
-                    if not (0<=box[1]-cb[3]<.018 and min(abs(box[0]-c['regions'][0]['box'][0]),abs(box[0]-row['region']['box'][0]))<.06): break
+                    box=nxt['layout']; cb=current['layout']
+                    if not (0<=box[1]-cb[3]<.018 and min(abs(box[0]-c['layout_x0']),abs(box[0]-row['layout'][0]))<.06): break
                     if not re.fullmatch(r'[A-Z0-9 &.,()\-/]+',fold_map(nxt['text'])[0]): break
                     continuation=candidate(nxt,0)
                     c['value']+=' '+nxt['text']; c['regions'].append(nxt['region']); current=nxt
@@ -269,8 +332,10 @@ def inspect_marks(doc,pages,rows,images,fields,lang):
     seals=[]; signer_candidates=[]
     for p in pages:
         number=p['number']; width,height=p['width'],p['height']
+        if p['method']=='text' and p['rotation']%180: width,height=height,width  # layout space of a rotated text page
         page_rows=[r for r in rows if r['page']==number]
-        lines=[OCRLine(tuple(OCRWord(w['text'],round(w['box'][0]*width),round(w['box'][1]*height),max(1,round((w['box'][2]-w['box'][0])*width)),max(1,round((w['box'][3]-w['box'][1])*height)),w['confidence'] if w['confidence'] is not None else 100) for w in r['words'])) for r in page_rows]
+        # Signing-title geometry ("name below title") is evaluated in layout space.
+        lines=[OCRLine(tuple(OCRWord(w['text'],round(w['layout'][0]*width),round(w['layout'][1]*height),max(1,round((w['layout'][2]-w['layout'][0])*width)),max(1,round((w['layout'][3]-w['layout'][1])*height)),w['confidence'] if w['confidence'] is not None else 100) for w in r['words'])) for r in page_rows]
         # Preserve the selected row identity, never rematch a repeated name globally.
         anchors=signature_anchors(lines); selected_candidates=[]
         for anchor in anchors:

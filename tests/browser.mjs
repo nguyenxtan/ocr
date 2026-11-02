@@ -1,6 +1,6 @@
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
-import {mkdir} from 'node:fs/promises';
+import {mkdir, readFile} from 'node:fs/promises';
 const browser=await chromium.launch();
 const context=await browser.newContext({viewport:{width:1512,height:1000}});
 const page=await context.newPage();
@@ -33,6 +33,8 @@ try {
   assert(await page.locator('.field.selected').count());
   await page.locator('[data-field="tax_id"]').click();
   // Draw through inverse SVG coordinates at 125% zoom and 90-degree rotation.
+  await page.locator('#draw-region').click();
+  await page.locator('rect.source.selected').first().scrollIntoViewIfNeeded();
   const coordinates=await page.evaluate(()=>{
     const group=document.querySelector('#page-coordinates'),box=document.querySelector('rect.source.selected');
     const x=+box.getAttribute('x'),y=+box.getAttribute('y'),w=+box.getAttribute('width'),h=+box.getAttribute('height');
@@ -40,7 +42,6 @@ try {
     const a=new DOMPoint(x,y).matrixTransform(matrix),b=new DOMPoint(x+w,y+h).matrixTransform(matrix);
     return {a:{x:a.x,y:a.y},b:{x:b.x,y:b.y},expected:box.getAttribute('data-box').split(',').map(Number)};
   });
-  await page.locator('#draw-region').click();
   await page.mouse.move(coordinates.a.x,coordinates.a.y);await page.mouse.down();
   await page.mouse.move(coordinates.b.x,coordinates.b.y,{steps:10});await page.mouse.up();
   await page.locator('#region-info').filter({hasText:'Vùng mới chưa lưu'}).waitFor();
@@ -52,6 +53,34 @@ try {
   const saved=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd.fields.tax_id.regions[0].box);
   assert(saved.every((v,i)=>Math.abs(v-coordinates.expected[i])<.002));
   await page.screenshot({path:'test-results/02-ocr.png',fullPage:true});
+  // Presence confirmation with several suspect locations must name exactly one.
+  const eportFields=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.eport.fields);
+  if(process.env.REQUIRE_PRESENCE_CHOICES==='1') assert(eportFields.signature.regions.length>1,'fixture must produce several suspect signature regions');
+  const presenceChecked=eportFields.signature.regions.length>1;
+  if(presenceChecked){
+    const suspects=eportFields.signature.regions;
+    await page.locator('.thumb[data-doc="eport"]').first().click();
+    await page.locator('[data-field="signature"]').click();
+    await page.locator('[data-candidate]').first().waitFor();
+    assert.equal(await page.locator('[data-candidate]').count(),suspects.length);
+    await page.locator('#edit-value').fill('Có');
+    await page.locator('#edit-reason').fill('Presence without one location');
+    await page.locator('#save-edit').click();
+    await page.locator('#alert').filter({hasText:'một vùng'}).waitFor();
+    await page.locator('[data-candidate="1"]').click();
+    assert.equal(await page.locator('#edit-value').inputValue(),'Có');
+    await page.locator('#zoom-in').click(); await page.locator('#rotate').click();
+    assert.equal(await page.locator('rect.pending').count(),1);
+    assert.equal(await page.locator('rect.pending').getAttribute('data-box'),suspects[1].box.join(','));
+    assert.equal(await page.locator('#page-coordinates rect.pending').count(),1);
+    await page.locator('#edit-reason').fill('Chọn một vùng ký');
+    await page.locator('#save-edit').click();
+    await page.locator('#history').filter({hasText:'Chọn một vùng ký'}).waitFor({state:'attached'});
+    const signature=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.eport.fields.signature);
+    assert.deepEqual(signature.regions,[suspects[1]]); assert.equal(signature.status,'manual');
+    assert.deepEqual(signature.candidates.flatMap(c=>c.regions),suspects);
+    await page.screenshot({path:'test-results/02b-presence.png',fullPage:true});
+  }
   // A delayed pre-edit report must not replace the edited OCR screen.
   let releaseReport, markReport;
   const holdReport=new Promise(r=>releaseReport=r), reportCaptured=new Promise(r=>markReport=r);
@@ -69,16 +98,56 @@ try {
   await page.locator('[data-check="tax_id"]').click();
   assert.equal(await page.locator('#evidence .proof').count(),2);
   await page.screenshot({path:'test-results/03-compare.png',fullPage:true});
+  // The export is the displayed snapshot, even if the session changes afterwards.
+  const shown=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd);
+  const shownCompany=shown.fields.company_vi.value;
+  const mutated=await page.evaluate(async d=>(await fetch('/api/fields/gpkd/company_vi',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:'SNAPSHOT MUTATION',regions:[{page:1,box:[.1,.1,.2,.2]}],revision:d.revision,document_id:d.id,reason:'after display'})})).status,shown);
+  assert.equal(mutated,200);
   const downloadPromise=page.waitForEvent('download'); await page.locator('#download').click();
   const download=await downloadPromise; assert.equal(download.suggestedFilename(),'doi-chieu.json');
+  const exported=JSON.parse(await readFile(await download.path(),'utf8'));
+  assert.equal(exported.documents.gpkd.revision,shown.revision);
+  assert.equal(exported.documents.gpkd.fields.company_vi.value,shownCompany);
+  assert.notEqual(exported.documents.gpkd.fields.company_vi.value,'SNAPSHOT MUTATION');
+  assert.equal(exported.conclusion,await page.locator('#verdict').getAttribute('class').then(c=>c.split(' ')[1]));
+  const current=await page.evaluate(async()=> (await (await fetch('/api/report')).json()).documents.gpkd);
+  assert.equal(current.revision,shown.revision+1);
   await page.locator('#back-ocr').click(); await page.locator('#back-upload').click();
   const removed=page.waitForResponse(r=>r.url().endsWith('/api/documents/gpkd')&&r.request().method()==='DELETE');
   await page.locator('[data-remove="gpkd"]').click();
   await removed;
   assert(await page.locator('#continue-upload').isDisabled());
   assert.equal(await page.evaluate(async()=> (await fetch('/api/report')).status),409);
+  if(process.env.AMBIGUOUS_PDF){
+    // Correcting a field with conflicting candidates requires choosing one source.
+    await page.locator('#file-gpkd').setInputFiles(process.env.AMBIGUOUS_PDF);
+    await page.locator('[data-kind="gpkd"] .badge.ready').waitFor({timeout:240000});
+    await page.locator('#continue-upload').click();
+    await page.locator('#screen-ocr:not([hidden])').waitFor();
+    await page.locator('[data-field="tax_id"]').click();
+    await page.locator('[data-candidate="1"]').waitFor();
+    assert.equal(await page.locator('[data-candidate]').count(),2);
+    const original=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd);
+    const field=original.fields.tax_id;
+    await page.locator('#edit-value').fill(field.candidates[1].value);
+    await page.locator('#edit-reason').fill('Ambiguous without source');
+    await page.locator('#save-edit').click();
+    await page.locator('#alert').filter({hasText:'ứng viên'}).waitFor();
+    const rejected=await page.evaluate(async([d,f])=>(await fetch('/api/fields/gpkd/tax_id',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:f.candidates[1].value,regions:f.regions,revision:d.revision,document_id:d.id,reason:'all regions'})})).status,[original,field]);
+    assert.equal(rejected,422);
+    await page.locator('[data-candidate="1"]').click();
+    assert.equal(await page.locator('#edit-value').inputValue(),field.candidates[1].value);
+    await page.locator('#region-info').filter({hasText:'Nguồn ứng viên 2'}).waitFor();
+    await page.locator('#edit-reason').fill('Chọn ứng viên 2');
+    await page.locator('#save-edit').click();
+    await page.locator('#history').filter({hasText:'Chọn ứng viên 2'}).waitFor({state:'attached'});
+    const after=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd.fields.tax_id);
+    assert.deepEqual(after.regions,field.candidates[1].regions);
+    assert.deepEqual(after.candidates,field.candidates); assert.equal(after.raw,field.raw); assert.equal(after.status,'manual');
+    await page.screenshot({path:'test-results/04-ambiguous-edit.png',fullPage:true});
+  }
   assert.deepEqual(errors,[]);
-  console.log('Browser: upload validation, 3 screens, source selection, zoom/rotation, edit/history, compare, export and removal PASS');
+  console.log('Browser: upload validation, 3 screens, source selection, zoom/rotation, edit/history, compare, export and removal'+(process.env.AMBIGUOUS_PDF?', ambiguous source selection':'')+(presenceChecked?', presence location choice':'')+', snapshot export'+' PASS');
 } finally {
   await context.request.delete((process.env.WEB_URL||'http://127.0.0.1:8000')+'/api/session').catch(()=>{});
   await context.close(); await browser.close();

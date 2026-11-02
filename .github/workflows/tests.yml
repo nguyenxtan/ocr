@@ -43,6 +43,8 @@ jobs:
         env:
           GPKD_PDF: /tmp/ocr-ci-fixtures/gpkd.pdf
           EPORT_PDF: /tmp/ocr-ci-fixtures/eport.pdf
+          AMBIGUOUS_PDF: /tmp/ocr-ci-fixtures/gpkd-ambiguous.pdf
+          REQUIRE_PRESENCE_CHOICES: '1'
         run: |
           python tests/make_web_fixtures.py /tmp/ocr-ci-fixtures
           python -m uvicorn app.web:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/ocr-web-ci.log 2>&1 &

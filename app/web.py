@@ -37,6 +37,10 @@ class Edit(BaseModel):
     reason:str=Field(min_length=1,max_length=300)
 
 
+def same_region(a,b):
+    return a['page']==b['page'] and all(abs(x-y)<1e-6 for x,y in zip(a['box'],b['box']))
+
+
 def create_app(root=None, timeout=None, ttl=None):
     @asynccontextmanager
     async def lifespan(app):
@@ -48,11 +52,15 @@ def create_app(root=None, timeout=None, ttl=None):
 
     @app.middleware('http')
     async def guard(request,call_next):
-        if request.method not in ('GET','HEAD','OPTIONS'):
+        # Every API call, including GET /api/session (which creates a session), must
+        # come from this origin. Checked before routing so cross-site requests (e.g. an
+        # <img> on another site, or another localhost port) can never consume one of
+        # the limited sessions. Clients without browser headers (curl, tests) pass.
+        if request.url.path.startswith('/api/') or request.method not in ('GET','HEAD','OPTIONS'):
             origin=request.headers.get('origin')
-            if origin and urlsplit(origin).netloc!=request.headers.get('host'):
+            if origin is not None and urlsplit(origin).netloc!=request.headers.get('host'):
                 return JSONResponse({'detail':'Nguồn yêu cầu không hợp lệ.'},status_code=403)
-            if request.headers.get('sec-fetch-site')=='cross-site':
+            if request.headers.get('sec-fetch-site') not in (None,'same-origin','none'):
                 return JSONResponse({'detail':'Nguồn yêu cầu không hợp lệ.'},status_code=403)
         response=await call_next(request)
         response.headers.update({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer', 'X-Frame-Options':'DENY',
@@ -165,8 +173,19 @@ def create_app(root=None, timeout=None, ttl=None):
             if r.page>len(d['pages']) or not all(math.isfinite(v) for v in r.box) or not (0<=x0<x1<=1 and 0<=y0<y1<=1):
                 raise HTTPException(422,'Trang hoặc tọa độ vùng nguồn không hợp lệ.')
         f=d['fields'][key]
+        # Resolving a field with several conflicting candidates must name its source:
+        # retained OCR regions may belong to at most one candidate (or be newly drawn).
+        submitted=[r.model_dump() for r in body.regions]
+        if len(f['candidates'])>1:
+            retained=[r for r in submitted if any(same_region(r,x) for c in f['candidates'] for x in c['regions'])]
+            consistent=any(all(any(same_region(r,x) for x in c['regions']) for r in retained) for c in f['candidates'])
+            if retained and not consistent:
+                raise HTTPException(422,'Trường có nhiều ứng viên mâu thuẫn. Chọn vùng nguồn của một ứng viên hoặc vẽ vùng mới trước khi lưu.')
+        # Presence is confirmed at one place: pick one suspect location or draw one.
+        if key in ('signature','seal') and len(submitted)>1:
+            raise HTTPException(422,'Xác nhận hiện diện chữ ký/con dấu chỉ dùng một vùng. Chọn một vùng nghi có hoặc vẽ một vùng mới.')
         before={k:deepcopy(f[k]) for k in ('value','normalized','regions','status')}
-        f.update(value=body.value.strip(),normalized=normalize_value(key,body.value),regions=[r.model_dump() for r in body.regions],status='manual' if body.value.strip() else 'missing')
+        f.update(value=body.value.strip(),normalized=normalize_value(key,body.value),regions=submitted,status='manual' if body.value.strip() else 'missing')
         f['history'].append({'at':time.time(),'before':before,'after':{k:deepcopy(f[k]) for k in before},'reason':body.reason})
         d['revision']+=1
         return f

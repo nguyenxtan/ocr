@@ -1,10 +1,29 @@
 """Conservative comparisons; absence, ambiguity and OCR uncertainty never match."""
 import re
-from app.web_extract import compact, normalize_value
-from app.seal_ocr import strict_name_match
+from app.web_extract import compact, exact_text, normalize_value
 
 READABLE={'read','manual'}
 LABELS={'PASS':'Đạt','REVIEW':'Cần kiểm tra','FAIL':'Không đạt'}
+# Spelling of the same legal form. Used only to downgrade a mismatch to REVIEW,
+# never to produce PASS: the full accent-preserving name must still be equal.
+LEGAL_FORMS=((r'\bTRACH NHIEM HUU HAN\b','TNHH'),(r'\bMOT THANH VIEN\b','MTV'),(r'\bCONG TY CO PHAN\b','CONG TY CP'),(r'\bCTCP\b','CONG TY CP'))
+
+
+def loose_company(value):
+    n=compact(value)
+    for pattern,short in LEGAL_FORMS: n=re.sub(pattern,short,n)
+    return n
+
+
+def name_result(av,bv,mode):
+    """PASS only for identical full names (NFC/case/space/punctuation only).
+
+    Folding accents or legal-form spelling may explain an OCR difference, so those
+    cases go to REVIEW; they can never PASS (HÙNG and HƯNG are different names).
+    """
+    if exact_text(av)==exact_text(bv): return 'same'
+    near=loose_company if mode=='company' else compact
+    return 'near' if near(av)==near(bv) else 'different'
 
 
 def compare(documents):
@@ -22,11 +41,12 @@ def compare(documents):
                 valid=bool(re.fullmatch(r'(?:[0-9]{10}|[0-9]{13})',av) and re.fullmatch(r'(?:[0-9]{10}|[0-9]{13})',bv))
                 same=av==bv
             else:
-                valid=True; same=compact(av)==compact(bv)
-                if mode=='company': same=strict_name_match(av,bv)
+                valid=True; result=name_result(av,bv,mode); same=result=='same'
             if valid:
                 status='PASS' if same else different
                 reason='Hai giá trị đọc được khớp sau chuẩn hóa.' if same else ('Hai giá trị khác nhau; yêu cầu kiểm tra giấy ủy quyền, không suy luận thẩm quyền pháp lý.' if different=='REVIEW' else 'Hai giá trị đọc được khác nhau; kiểm tra lại vùng nguồn.')
+                if mode!='id' and result=='near':
+                    status='REVIEW'; reason='Chỉ khác dấu tiếng Việt hoặc cách viết loại hình doanh nghiệp; không tự xem là khớp, cần đối chiếu bản gốc.'+(' Nếu khác người, yêu cầu kiểm tra giấy ủy quyền.' if different=='REVIEW' else '')
         rows.append({'id':key,'label':label,'status':status,'reason':reason,'left':a,'right':b})
     add('tax_id','Mã số doanh nghiệp / MST',field(g,'tax_id'),field(e,'tax_id'),'id')
     add('registration','Số giấy ĐKKD',field(g,'tax_id'),field(e,'registration_id'),'id')

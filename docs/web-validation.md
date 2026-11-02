@@ -7,8 +7,8 @@ Nhánh: `feat/gpkd-eport-web`. Baseline: `origin/main` tại `79d7207`. Hai PDF 
 | Hạng mục | Kết quả thực tế |
 |---|---|
 | Baseline trước khi thêm web | 163 pytest qua, macOS ARM64/Python 3.12 |
-| Toàn bộ suite sau thay đổi | **208 pytest qua**, macOS, 8,98 giây |
-| Toàn bộ suite trong Docker Linux ARM64 | **208 pytest qua**, read-only/2 CPU/2 GB RAM, 15,10 giây |
+| Toàn bộ suite sau thay đổi | **242 pytest qua**, macOS, 11,19 giây |
+| Toàn bộ suite trong Docker Linux ARM64 | **242 pytest qua**, read-only/2 CPU/2 GB RAM, 16,80 giây |
 | Browser Chromium, hai PDF người dùng | Qua toàn luồng bằng API/OCR thật; không mock kết quả OCR |
 | Browser Chromium, PDF tổng hợp cho CI | Qua; không cần đưa hồ sơ khách hàng vào CI |
 | Build Docker bot | Qua; import `app.bot` trong image thành công, không bật polling thật |
@@ -24,12 +24,12 @@ Unit/API còn kiểm tra: nội dung thay vì tên file; sai/mơ hồ loại; nh
 
 ## Thời gian trên cùng hai PDF
 
-Lệnh: `python -m benchmarks.web_compare <gpkd.pdf> <eport.pdf>`, 2 lượt liên tiếp trên macOS ARM64, Tesseract 5.5.4, Python 3.12.16. Thời gian end-to-end gồm khởi động worker, không gồm ảnh phụ. Không in dữ liệu trích xuất vào kết quả benchmark.
+Lệnh: `python -m benchmarks.web_compare <gpkd.pdf> <eport.pdf>`, 2 lượt liên tiếp trên macOS ARM64, Tesseract 5.5.4, Python 3.12.16. Thời gian end-to-end gồm khởi động worker, không gồm ảnh phụ. Đo sau sửa review, trong lúc máy phát triển vẫn chạy Docker và kiểm thử trình duyệt; không phải benchmark máy rảnh. Không in dữ liệu trích xuất vào kết quả benchmark.
 
 | Đầu vào | Bot cũ, lượt 1 / 2 | Web mới, lượt 1 / 2 |
 |---|---|---|
-| GPKD, 2 trang | 1,097 / 1,064 s | 1,148 / 1,130 s |
-| EPORT, 2 trang | 2,892 / 3,112 s | 6,495 / 7,041 s |
+| GPKD, 2 trang | 1,324 / 1,467 s | 1,288 / 1,326 s |
+| EPORT, 2 trang | 3,433 / 3,705 s | 7,788 / 7,850 s |
 
 Bot cũ kiểm tra một PDF và dấu; web mới đọc một cặp, trường, vùng nguồn, dấu và tên người ký. Hai hợp đồng khác nhau: **không dùng bảng này làm điểm chính xác hoặc tuyên bố tăng tốc**. EPORT web chậm hơn vì các bước đọc bổ sung. Thời gian thay đổi theo CPU, tải máy, chất lượng scan và ngôn ngữ OCR. Thời gian đọc/trích trường/kiểm dấu/chờ hàng đợi được lưu trong từng tài liệu và báo cáo.
 
@@ -38,6 +38,18 @@ Hai bản gốc: bot cũ trả REVIEW cho từng file; web mới phân loại đ
 ## Rà soát và quyết định triển khai
 
 Đã sửa: lặp tên khi nhãn và giá trị ở hai dòng; bỏ mất trạng thái mờ ở dòng tiếp; chọn nhầm nguồn người ký khi tên trùng phần khai báo; tệp bị xóa vẫn được công bố sau validation; báo cáo cũ xuất hiện sau chỉnh sửa. Mỗi lỗi có ca hồi quy trong các tệp `test_web_*` hoặc `browser.mjs`. Ngoài ra đã khóa chỉnh sửa bằng cả ID tài liệu và revision, không chỉ revision.
+
+Rà soát độc lập lần 2 (4 lỗi Important, có ca hồi quy trong `tests/test_web_review_fixes.py` và `browser.mjs`):
+- So sánh tên doanh nghiệp/người: chỉ **Đạt** khi toàn bộ tên trùng sau chuẩn hóa Unicode NFC, chữ hoa, khoảng trắng và dấu câu; giữ dấu tiếng Việt, loại hình (TNHH/MTV/CỔ PHẦN), từ ngắn và thứ tự. Không dùng bộ so khớp tên lỏng của bot. Chỉ khác dấu hoặc khác cách viết loại hình (ví dụ TNHH ↔ TRÁCH NHIỆM HỮU HẠN) chuyển **Cần kiểm tra**, không bao giờ Đạt. Ứng viên khác dấu không bị gộp thành một.
+- PDF lớp chữ có /Rotate 90/180/270: đọc dòng, dòng kế và tên xuống dòng bằng tọa độ bố cục gốc; vùng bằng chứng công bố theo hướng hiển thị.
+- Mọi yêu cầu `/api/*` (kể cả GET tạo phiên) có `Origin` khác host hoặc `Sec-Fetch-Site` khác `same-origin`/`none` bị từ chối trước khi tạo phiên; client không gửi các header này (curl, test) vẫn dùng được.
+- Sửa trường có nhiều ứng viên mâu thuẫn: giao diện liệt kê ứng viên và bắt chọn một ứng viên hoặc vẽ vùng mới; API từ chối trộn vùng nguồn của các ứng viên khác nhau; hai cách đọc ở cùng một vùng vật lý vẫn có thể được người dùng xác nhận. Ứng viên gốc, `raw` và lịch sử giữ nguyên.
+
+Đã xử lý tiếp các vấn đề bằng chứng: lớp chữ có chế độ ẩn, độ trong suốt, chữ trắng hoặc bị hình/chữ nhật che phủ chuyển sang OCR ảnh trang; PDF chữ hiển thị bình thường vẫn đọc lớp chữ. Đây là kiểm tra hiển thị bảo thủ, không là xác thực nội dung PDF. Xác nhận chữ ký/con dấu bắt chọn một vị trí hoặc vẽ lại; vùng tên công ty xuống dòng vẫn được giữ nhiều khung. Vùng đang chọn có viền riêng và theo cùng phép zoom/xoay. Nút tải JSON xuất bản báo cáo đã hiển thị, có ca sửa dữ liệu sau khi hiển thị rồi kiểm tra bản tải xuống vẫn giữ đúng phiên bản cũ.
+
+Claude đã review và chỉ ra các lỗi, đồng thời đã viết một phần sửa trước khi người dùng giới hạn vai trò. Theo yêu cầu mới, worker Claude đã được dừng; phần chốt sửa, rà code, build và kiểm thử cuối do agent chính thực hiện. Không gọi Claude thêm để sửa.
+
+Đã sửa một lỗi kiểm thử browser không ổn định từng xảy ra ở CI: đo tọa độ kéo trước khi nút vẽ làm cuộn trang. Nay lấy tọa độ sau thao tác vẽ/đưa vùng vào khung nhìn; bỏ cuộn trang trễ ở bước chọn trường. Giữ nguyên mức sai số tọa độ 0,002.
 
 Quyết định: dịch vụ FastAPI/SVG riêng, không thêm framework/frontend build; giữ toàn bộ bot gốc. Chi phí: trình xem hiển thị ảnh raster từ PDF thay vì PDF vector/text selection; các vùng vẫn liên kết và biến đổi tọa độ đúng. Dùng trạng thái phiên trong bộ nhớ, một uvicorn worker; không có lưu trữ lâu dài hoặc đồng bộ nhiều máy. Không thêm đăng nhập/dashboard ngoài phạm vi.
 
