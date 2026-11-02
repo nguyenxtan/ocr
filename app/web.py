@@ -144,7 +144,9 @@ def create_app(root=None, timeout=None, ttl=None):
         async with request.app.state.store.preview:
             if not output.exists():
                 try: await request.app.state.store.command('page',d['path'],output,page,timeout=20)
-                except (ValueError,TimeoutError): raise HTTPException(422,'Không tạo được ảnh trang PDF.') from None
+                except (ValueError,TimeoutError):
+                    output.unlink(missing_ok=True)
+                    raise HTTPException(422,'Không tạo được ảnh trang PDF.') from None
             if s['documents'].get(kind) is not d: raise HTTPException(404,'Hồ sơ đã thay đổi.')
             try: data=output.read_bytes()
             except OSError: raise HTTPException(404,'Hồ sơ đã thay đổi.') from None

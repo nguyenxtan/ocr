@@ -7,8 +7,8 @@ Nhánh: `feat/gpkd-eport-web`. Baseline: `origin/main` tại `79d7207`. Hai PDF 
 | Hạng mục | Kết quả thực tế |
 |---|---|
 | Baseline trước khi thêm web | 163 pytest qua, macOS ARM64/Python 3.12 |
-| Toàn bộ suite sau thay đổi | **207 pytest qua**, macOS, 7,62 giây |
-| Toàn bộ suite trong Docker Linux ARM64 | **207 pytest qua**, read-only/2 CPU/2 GB RAM, 11,68 giây |
+| Toàn bộ suite sau thay đổi | **208 pytest qua**, macOS, 8,98 giây |
+| Toàn bộ suite trong Docker Linux ARM64 | **208 pytest qua**, read-only/2 CPU/2 GB RAM, 15,10 giây |
 | Browser Chromium, hai PDF người dùng | Qua toàn luồng bằng API/OCR thật; không mock kết quả OCR |
 | Browser Chromium, PDF tổng hợp cho CI | Qua; không cần đưa hồ sơ khách hàng vào CI |
 | Build Docker bot | Qua; import `app.bot` trong image thành công, không bật polling thật |
@@ -20,7 +20,7 @@ Suite có cảnh báo deprecation của PyMuPDF/Starlette TestClient; không có
 
 Các kiểm tra trình duyệt: PDF giả; tải GPKD vào ô EPORT và chặn bước; tải đủ hai loại; bước OCR; trường → vùng/trang và vùng → trường; zoom 125% + xoay 90°; kéo vẽ vùng dùng ma trận nghịch đảo và xác nhận tọa độ lưu sai số dưới 0,002; chỉnh giá trị/lý do/lịch sử; trì hoãn báo cáo rồi sửa trường và kiểm tra không xuất hiện báo cáo cũ; màn đối chiếu và hai vùng bằng chứng; tải JSON; xóa file làm vô hiệu kết quả đối chiếu. Browser test cố ý sửa MST để kiểm tra luồng chỉnh sửa/mâu thuẫn; ảnh sau chỉnh sửa không phải kết luận của hai bản gốc.
 
-Unit/API còn kiểm tra: nội dung thay vì tên file; sai/mơ hồ loại; nhiều trang; tách chủ sở hữu/người đại diện; PDF mật khẩu; giả PDF; vượt dung lượng/số trang; chữ lỗi mã hóa/ký tự điều khiển; xoay trang PDF; dấu quá nhạt giữ chưa xác định; sai MST/tên; MST dấu mâu thuẫn không bị tên ghi đè; đại diện khác yêu cầu xem ủy quyền; không khớp khi thiếu/độ đọc thấp; nhiều giá trị; mất OCR; nguồn tên trùng ở vùng khai báo và vùng ký phải khác nhau; tên xuống dòng; lịch sử và giá trị gốc; vùng ngoài trang; phiên khác không đọc ảnh; CSRF; phiên hết hạn/dọn tệp; cache ảnh giới hạn; hủy/hàng đợi đầy/worker timeout; thay file không nhận chỉnh sửa cũ; xóa trong lúc PUT đang kiểm tra không làm tệp xuất hiện lại; dọn thư mục sau crash ở lần khởi động sau.
+Unit/API còn kiểm tra: nội dung thay vì tên file; sai/mơ hồ loại; nhiều trang; tách chủ sở hữu/người đại diện; PDF mật khẩu; giả PDF; vượt dung lượng/số trang; chữ lỗi mã hóa/ký tự điều khiển; xoay trang PDF; dấu quá nhạt giữ chưa xác định; sai MST/tên; MST dấu mâu thuẫn không bị tên ghi đè; đại diện khác yêu cầu xem ủy quyền; không khớp khi thiếu/độ đọc thấp; nhiều giá trị; mất OCR; nguồn tên trùng ở vùng khai báo và vùng ký phải khác nhau; tên xuống dòng; lịch sử và giá trị gốc; vùng ngoài trang; phiên khác không đọc ảnh; CSRF; phiên hết hạn/dọn tệp; cache ảnh giới hạn; hủy/hàng đợi đầy/worker timeout; thay file không nhận chỉnh sửa cũ; xóa trong lúc PUT đang kiểm tra không làm tệp xuất hiện lại; dọn thư mục sau crash ở lần khởi động sau; ảnh xem trước lỗi không bị cache thành ảnh hợp lệ và có thể tạo lại.
 
 ## Thời gian trên cùng hai PDF
 

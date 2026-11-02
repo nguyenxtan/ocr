@@ -209,3 +209,18 @@ def test_stale_temp_roots_cleaned_after_crash(tmp_path):
     assert not old.exists()
     assert unrelated.exists()
     asyncio.run(store.close())
+
+
+def test_failed_preview_does_not_cache_error_as_image(client,monkeypatch):
+    from app.web_jobs import Store
+    upload(client); d=wait(client)['documents']['gpkd'];old=Store.command
+    async def fail_page(self,mode,path,output,*args,**kw):
+        if mode=='page':
+            output.write_text('{"error":"render failed"}');raise ValueError('render failed')
+        return await old(self,mode,path,output,*args,**kw)
+    monkeypatch.setattr(Store,'command',fail_page)
+    assert client.get(d['page_url']).status_code==422
+    monkeypatch.setattr(Store,'command',old)
+    response=client.get(d['page_url'])
+    assert response.status_code==200
+    assert response.content.startswith(b'\x89PNG')
