@@ -17,7 +17,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-vie tesseract-ocr-eng poppler-utils
       - name: Install Python dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r requirements-dev.txt -r requirements-web.txt
       - name: Python unit tests
         run: python -m pytest -q
       - name: Controlled response latency comparison (not live OCR)
@@ -29,3 +29,29 @@ jobs:
         run: python -m compileall -q app benchmarks tests
       - name: Build Docker image
         run: docker build -t ocr-telegram:ci .
+      - name: Build web Docker image
+        run: docker build -f Dockerfile.web -t ocr-web:ci .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install browser test runtime
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Browser flow with synthetic PDFs (no customer documents)
+        env:
+          GPKD_PDF: /tmp/ocr-ci-fixtures/gpkd.pdf
+          EPORT_PDF: /tmp/ocr-ci-fixtures/eport.pdf
+          AMBIGUOUS_PDF: /tmp/ocr-ci-fixtures/gpkd-ambiguous.pdf
+          REQUIRE_PRESENCE_CHOICES: '1'
+        run: |
+          python tests/make_web_fixtures.py /tmp/ocr-ci-fixtures
+          python -m uvicorn app.web:app --host 127.0.0.1 --port 8000 --no-access-log > /tmp/ocr-web-ci.log 2>&1 &
+          WEB_PID=$!
+          trap 'kill "$WEB_PID"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/ > /dev/null; then break; fi
+            sleep 1
+          done
+          npm run test:browser

@@ -1,5 +1,75 @@
 # OCR PDF Bot · Telegram (POC)
 
+## Web đối chiếu GPKD–EPORT
+
+Web là dịch vụ riêng; bot Telegram và lệnh chạy cũ bên dưới giữ nguyên. Web không cần token Telegram và Compose web không truyền token vào container.
+
+### Chạy bằng Docker
+
+Cần Docker Engine và Docker Compose (Docker Desktop trên macOS, hoặc Colima). Từ thư mục repo:
+
+```bash
+# Không thay .env đã điền token. Chỉ sao chép nếu chưa có file này.
+test -f .env || cp .env.example .env
+docker compose -f compose.web.yaml up -d --build
+# Mở http://localhost:8000
+docker compose -f compose.web.yaml logs --tail=30 web
+docker compose -f compose.web.yaml down
+```
+
+Bot vẫn chạy riêng bằng `docker compose up -d --build`. Web bind localhost; không cần khởi động bot để dùng web. Trên máy phát triển hiện tại có profile Colima `ocr-test`: `colima start --profile ocr-test` nếu Docker chưa chạy.
+
+### Chạy Python trực tiếp
+
+```bash
+# macOS: cài Python và OCR trước
+brew install python@3.12 tesseract tesseract-lang
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-web.txt
+python -m uvicorn app.web:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log
+```
+
+### Ba bước sử dụng
+
+1. **Tải & kiểm tra loại:** hai PDF độc lập, tối đa 20 MB/file, 20 trang/file. Kiểm tra nội dung PDF, mật khẩu, cấu trúc, kích thước trang và tiêu đề loại chứng từ. Sai loại hoặc chưa xác định sẽ chặn bước tiếp theo. Thay/xóa file hủy tác vụ và bỏ kết quả cũ; thay bằng tệp lỗi cũng không giữ kết quả cũ.
+2. **Nhận diện OCR:** chọn tài liệu/trang bên trái, chọn trường bên phải hoặc khung trên trang. Lưu giá trị gốc, giá trị hiện tại/chuẩn hóa, trạng thái, ứng viên và các vùng nguồn. Có zoom, xoay, vẽ lại vùng và chỉnh giá trị kèm lý do/lịch sử. Để sửa sang trang khác: chọn trường, chọn trang khác trong cùng tài liệu, vẽ vùng rồi lưu. Trường thiếu cũng phải chọn vùng trước khi xác nhận. Với hiện diện chữ ký/con dấu, nhập `Có` hoặc `Không có` sau khi kiểm tra bản gốc; chữ in tên người không tự chứng minh có chữ ký.
+3. **Đối chiếu:** 8 tiêu chí có hai giá trị, lý do và bằng chứng. MST, số ĐKKD, tên doanh nghiệp, đại diện và tên tại vị trí ký được đối chiếu riêng. Đại diện khác nhau cần kiểm tra ủy quyền; không tự kết luận sai thẩm quyền. Chữ ký/con dấu chỉ đánh giá hiện diện trên EPORT. MST dấu rõ mà khác không được bỏ qua bằng tên; tên chỉ là phương án khi MST dấu chưa đọc rõ. Thiếu, mờ hoặc nhiều giá trị luôn cần kiểm tra. Báo cáo JSON chứa đầy đủ trường/vùng/lịch sử/thời gian; nút Hoàn thành xóa hồ sơ phiên.
+
+Tên được so toàn bộ, giữ dấu tiếng Việt, loại hình doanh nghiệp, từ ngắn và thứ tự. Chỉ khác dấu/cách viết loại hình cần kiểm tra, không tự coi là khớp. Khi có nhiều ứng viên phải chọn nguồn hoặc vẽ lại; xác nhận hiện diện chữ ký/con dấu chỉ gắn một vùng. JSON tải xuống là đúng phiên bản báo cáo đang hiển thị.
+
+Không có tỷ lệ “tin cậy” minh họa. Các con số phần trăm trên trình xem chỉ là mức zoom. Kết luận Đạt/Cần kiểm tra/Không đạt không xác thực thật–giả hay thẩm quyền pháp lý.
+
+### Xử lý và lưu tạm
+
+- Ưu tiên lớp chữ khi đủ chất lượng; ký tự điều khiển, lỗi mã hóa, ít chữ hoặc lớp chữ có dấu hiệu ẩn/không hiển thị sẽ chuyển sang OCR ảnh trang. Giữ thông tin xoay PDF khi tạo ảnh/vùng nguồn. Hệ tọa độ chuẩn là trang hiển thị sau xoay gốc PDF, chuẩn hóa `[x0,y0,x1,y1]` trong `[0,1]`; SVG áp dụng chung phép xoay/zoom cho ảnh và khung, thao tác kéo dùng ma trận nghịch đảo.
+- Tái sử dụng Tesseract, bộ phát hiện dấu, bộ đọc riêng mực dấu và các primitive tên người ký. Web không sửa thuật toán hoặc handler Telegram. Không dùng lớp chữ khai báo công ty làm nội dung “đọc được trên dấu”.
+- Một tiến trình OCR đang chạy, tối đa ba tác vụ chờ; tác vụ có thể hủy, worker giới hạn 180 giây và bị dừng cả nhóm tiến trình khi hủy/quá hạn. Kết quả có trước ảnh xem trước/ảnh bằng chứng phụ; ảnh tạo theo yêu cầu và cache tối đa 64 MB cho cả dịch vụ.
+- Phiên ngẫu nhiên bằng cookie HttpOnly/SameSite, kiểm tra nguồn yêu cầu ghi. Tối đa 8 phiên, mỗi phiên chỉ hai hồ sơ, thời gian sống cố định mặc định 30 phút, dọn mỗi 10 giây. Tệp nằm trong thư mục riêng quyền 0700; không dùng tên file người dùng làm đường dẫn. Mọi ảnh, tác vụ, sửa trường và báo cáo đều kiểm tra phiên, ID tài liệu và phiên bản chỉnh sửa. Không dùng nhiều uvicorn workers vì trạng thái nằm trong bộ nhớ.
+- Dữ liệu và lịch sử không lưu lâu dài. Dừng dịch vụ bình thường xóa thư mục phiên; Docker dùng tmpfs và xóa khi container dừng. Nếu tiến trình local bị kill/crash, các thư mục do web tạo còn sót được dọn ở lần khởi động sau khi quá `max(TTL, 3600)` giây. Không ghi nội dung, tên hồ sơ, MST, người ký hoặc token vào log. Không bật access log; không commit báo cáo hay ảnh có dữ liệu cá nhân.
+- Compose: read-only, user không đặc quyền, giới hạn RAM 2 GB/CPU 2/PID 128, tmpfs 512 MB. Mặc định chỉ dùng local. Nếu triển khai qua mạng cần HTTPS, `WEB_SECURE_COOKIE=1` và lớp xác thực/kiểm soát truy cập của đơn vị; phiên trình duyệt không thay cho tài khoản đăng nhập.
+
+Cấu hình web trong `.env.example`: `WEB_SESSION_TTL_SEC`, `WEB_JOB_TIMEOUT_SEC`, `WEB_MAX_SESSIONS`, `WEB_QUEUE_SIZE`, `WEB_SECURE_COOKIE`. Có thể đặt `OCR_LANG=vie+eng`. Không đưa token thật vào `.env.example`.
+
+### Kiểm thử và đo thực tế
+
+```bash
+source .venv/bin/activate
+pip install -r requirements-web.txt -r requirements-dev.txt
+python -m pytest -q
+# Chạy web ở terminal khác, sau đó:
+npm ci
+npx playwright install chromium
+GPKD_PDF=/duong/dan/gpkd.pdf EPORT_PDF=/duong/dan/eport.pdf npm run test:browser
+# Cùng PDF, đo bot cũ và web mới; chỉ in metadata, không in giá trị trích xuất
+python -m benchmarks.web_compare /duong/dan/gpkd.pdf /duong/dan/eport.pdf
+```
+
+Xem [kết quả nghiệm thu và giới hạn](docs/web-validation.md). Hai PDF người dùng cung cấp và ảnh chụp trình duyệt nằm ngoài Git. `test-results/` bị bỏ qua vì có thể chứa nội dung hồ sơ.
+
+---
+
+
 Bot Telegram tiếp nhận **chỉ file PDF**, nhận diện dấu mộc doanh nghiệp, đối chiếu MST hoặc tên công ty, kiểm tra tên người ký với tên đại diện được **khai báo trong PDF**, và thông báo chữ ký số nhúng nếu có. Không xác minh dấu thật/giả hoặc thẩm quyền pháp lý ngoài nội dung tài liệu.
 
 ## 1. Chạy Docker

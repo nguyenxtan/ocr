@@ -11,3 +11,8 @@ tests
 *.png
 *.jpg
 *.jpeg
+node_modules
+test-results
+docs
+benchmarks
+.superpowers

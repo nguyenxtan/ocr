@@ -10,3 +10,6 @@ __pycache__/
 *.jpg
 *.jpeg
 data/
+node_modules/
+test-results/
+.superpowers/
