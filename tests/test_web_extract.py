@@ -16,7 +16,7 @@ def pdf(tmp_path, pages):
 def test_classifies_content_not_filename():
     assert classify('GIAY CHUNG NHAN DANG KY DOANH NGHIEP\nMa so doanh nghiep') == 'gpkd'
     assert classify('BAN DANG KY SU DUNG CANG DIEN TU E-PORT\nThong tin doanh nghiep') == 'eport'
-    assert classify('EPORT MOC PHAT.pdf') == 'unknown'
+    assert classify('EPORT ALPHA.pdf') == 'unknown'
     assert classify('GIAY CHUNG NHAN DANG KY DOANH NGHIEP\nBAN DANG KY SU DUNG EPORT') == 'unknown'
 
 
