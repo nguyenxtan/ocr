@@ -4,6 +4,7 @@ Never imports the bot or changes its extraction behavior. No customer content lo
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 import time
@@ -12,6 +13,7 @@ import unicodedata
 import fitz
 import cv2
 import numpy as np
+from app.web_refine import refine_fields
 from app.fields import normalize
 from app.analysis import render_page, detect_stamps, tax_code_valid, red_mask
 from app.seal_ocr import read_seal
@@ -158,44 +160,56 @@ def layout_box(words):
 
 
 def read_pages(doc, lang):
-    pages=[]; all_rows=[]; images={}
-    for number,page in enumerate(doc,1):
-        original_rotation=page.rotation
-        width,height=page.rect.width,page.rect.height
-        if width<=0 or height<=0 or width*height > 24_000_000:
-            raise ValueError('Kích thước trang PDF vượt giới hạn.')
-        words_raw=page.get_text('words', sort=True)
-        text=page.get_text('text')
-        # Only visible text is evidence; otherwise read what is rendered.
-        if usable_text(text) and not hidden_text_layer(page):
-            nw,nh=page.cropbox.width,page.cropbox.height
-            words=[{'text':w[4],'box':[w[0]/nw,w[1]/nh,w[2]/nw,w[3]/nh], 'confidence':None} for w in words_raw]
-            method='text'
-        else:
-            rgb=render_page(page); images[number]=rgb
-            try:
-                lines=ocr_lines(rgb,lang,3)
-            except Exception:
-                # Do not include OCR stderr (can contain paths or document data).
-                raise ValueError('OCR không xử lý được trang. Kiểm tra Tesseract và ngôn ngữ.') from None
-            ih,iw=rgb.shape[:2]
-            words=[{'text':w.text, 'box':[w.x/iw,w.y/ih,(w.x+w.w)/iw,(w.y+w.h)/ih], 'confidence':w.confidence} for l in lines for w in l.words]
-            method='ocr'
-        # Discard out-of-crop words, clamp tiny floating point overflow.
-        words=[{**w,'box':[max(0,min(1,x)) for x in w['box']]} for w in words if w['box'][2]>0 and w['box'][3]>0 and w['box'][0]<1 and w['box'][1]<1]
-        words=[w for w in words if w['box'][0]<w['box'][2] and w['box'][1]<w['box'][3]]
-        # Layout geometry (reading order, next line, wrap) stays in content space;
-        # evidence boxes are mapped to the displayed rotation.
-        for word in words: word['layout']=list(word['box'])
-        if method=='text' and original_rotation:
-            def rotated_box(box):
-                rect=fitz.Rect(box[0]*nw,box[1]*nh,box[2]*nw,box[3]*nh)*page.rotation_matrix
-                return [max(0,min(1,v)) for v in (rect.x0/width,rect.y0/height,rect.x1/width,rect.y1/height)]
-            for word in words: word['box']=rotated_box(word['layout'])
-        rows=rows_from_words(words,number)
-        all_rows.extend(rows)
-        pages.append({'number':number,'width':width,'height':height,'rotation':original_rotation,'method':method})
-    return pages, all_rows, images
+    """Render/read PDF on one thread; run at most two Tesseract calls at once.
+
+    No PyMuPDF object enters OCR threads. Futures are consumed in document order,
+    preserving page provenance even if the second scan finishes before the first.
+    """
+    pages=[]; all_rows=[]; images={}; prepared=[]
+    pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='web-page-ocr')
+    try:
+        for number,page in enumerate(doc,1):
+            width,height=page.rect.width,page.rect.height
+            if width<=0 or height<=0 or width*height>24_000_000:
+                raise ValueError('Kích thước trang PDF vượt giới hạn.')
+            info={'number':number,'width':width,'height':height,'rotation':page.rotation}
+            text=page.get_text('text')
+            if usable_text(text) and not hidden_text_layer(page):
+                nw,nh=page.cropbox.width,page.cropbox.height
+                words=[{'text':w[4],'box':[w[0]/nw,w[1]/nh,w[2]/nw,w[3]/nh],'confidence':None}
+                       for w in page.get_text('words',sort=True)]
+                pending=None; method='text'
+                matrix=page.rotation_matrix
+            else:
+                rgb=render_page(page); images[number]=rgb
+                pending=pool.submit(ocr_lines,rgb,lang,3)
+                words=None; method='ocr'; nw=nh=matrix=None
+            info['method']=method
+            prepared.append((info,words,pending,nw,nh,matrix))
+        for info,words,pending,nw,nh,matrix in prepared:
+            number=info['number'];width,height=info['width'],info['height']
+            if pending is not None:
+                try: lines=pending.result()
+                except Exception:
+                    for item in prepared:
+                        if item[2] is not None: item[2].cancel()
+                    raise ValueError('OCR không xử lý được trang. Kiểm tra Tesseract và ngôn ngữ.') from None
+                ih,iw=images[number].shape[:2]
+                words=[{'text':w.text,'box':[w.x/iw,w.y/ih,(w.x+w.w)/iw,(w.y+w.h)/ih],'confidence':w.confidence}
+                       for line in lines for w in line.words]
+            words=[{**w,'box':[max(0,min(1,x)) for x in w['box']]} for w in words
+                   if w['box'][2]>0 and w['box'][3]>0 and w['box'][0]<1 and w['box'][1]<1]
+            words=[w for w in words if w['box'][0]<w['box'][2] and w['box'][1]<w['box'][3]]
+            for word in words: word['layout']=list(word['box'])
+            if info['method']=='text' and info['rotation']:
+                for word in words:
+                    box=word['layout']
+                    rect=fitz.Rect(box[0]*nw,box[1]*nh,box[2]*nw,box[3]*nh)*matrix
+                    word['box']=[max(0,min(1,v)) for v in (rect.x0/width,rect.y0/height,rect.x1/width,rect.y1/height)]
+            all_rows.extend(rows_from_words(words,number));pages.append(info)
+        return pages,all_rows,images
+    finally:
+        pool.shutdown(wait=True,cancel_futures=True)
 
 
 ALIASES={
@@ -389,11 +403,13 @@ def extract(path: Path,kind: str,lang='vie+eng',marks=True):
             detected=classify('\n'.join(r['text'] for r in rows))
             fields=extract_fields(rows,kind)
             field_done=time.monotonic()
+            recheck=refine_fields(fields,images,lang,exact_text) if detected==kind else {'attempted':0,'confirmed':0}
+            recheck_done=time.monotonic()
             if kind=='eport' and detected=='eport' and marks:
                 inspect_marks(doc,pages,rows,images,fields,lang)
             end=time.monotonic()
-            return {'detected_kind':detected,'pages':pages,'fields':fields,
-                    'timings':{'read':round(read_done-started,3),'fields':round(field_done-read_done,3), 'marks':round(end-field_done,3),'total':round(end-started,3)},
+            return {'detected_kind':detected,'pages':pages,'fields':fields,'ocr_recheck':recheck,
+                    'timings':{'read':round(read_done-started,3),'fields':round(field_done-read_done,3), 'recheck':round(recheck_done-field_done,3),'marks':round(end-recheck_done,3),'total':round(end-started,3)},
                     'warnings': ['Chữ ký viết tay cần chọn vùng và xác nhận thủ công; không suy từ tên in.'] if kind=='eport' else []}
     except (fitz.FileDataError,fitz.EmptyFileError):
         raise ValueError('Không đọc được cấu trúc PDF.') from None
