@@ -6,7 +6,7 @@ def f(value, status='read'):
 
 
 def documents():
-    return {'gpkd': {'fields': {'tax_id':f('0123456789'), 'company_vi':f('CONG TY ALPHA'), 'legal_rep':f('NGUYEN VAN A')}},
+    return {'gpkd': {'fields': {'tax_id':f('0123456789'), 'company_vi':f('CONG TY ALPHA'), 'legal_rep':f('NGUYEN VAN A'),'seal':f('Có','manual')}},
             'eport': {'fields': {'tax_id':f('0123456789'), 'registration_id':f('0123456789'), 'company_vi':f('CONG TY ALPHA'), 'authorized_rep':f('NGUYEN VAN A'), 'signer':f('NGUYEN VAN A'), 'signature':f('Có','manual'), 'seal':f('Có','manual'), 'seal_tax_id':f('0123456789'), 'seal_company':f('CONG TY ALPHA')}}}
 
 
@@ -17,7 +17,7 @@ def row(report, key):
 def test_complete_pair_passes_without_confidence_percentage():
     r = compare(documents())
     assert r['conclusion'] == 'PASS'
-    assert len(r['rows']) == 8
+    assert len(r['rows']) == 9
 
 
 def test_mst_conflict_cannot_be_overridden_by_matching_name():

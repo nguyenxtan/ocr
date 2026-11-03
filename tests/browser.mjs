@@ -53,6 +53,18 @@ try {
   const saved=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd.fields.tax_id.regions[0].box);
   assert(saved.every((v,i)=>Math.abs(v-coordinates.expected[i])<.002));
   await page.screenshot({path:'test-results/02-ocr.png',fullPage:true});
+  // GPKD has a separate seal and a source on its own page, never on EPORT.
+  const gpkdSeal=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd.fields.seal);
+  assert(gpkdSeal.regions.length>0,'real/synthetic GPKD seal should have a detected source');
+  await page.locator('[data-field="seal"]').click();
+  assert((await page.locator('#page-title').textContent()).startsWith('GPKD'));
+  if(await page.locator('[data-candidate]').count())await page.locator('[data-candidate]').first().click();
+  await page.locator('#edit-value').fill('Có');
+  await page.locator('#edit-reason').fill('Xác nhận riêng mộc GPKD');
+  await page.locator('#save-edit').click();
+  await page.locator('#history').filter({hasText:'Xác nhận riêng mộc GPKD'}).waitFor({state:'attached'});
+  const confirmedSeal=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd.fields.seal);
+  assert.equal(confirmedSeal.status,'manual');assert.equal(confirmedSeal.regions.length,1);
   // Presence confirmation with several suspect locations must name exactly one.
   const eportFields=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.eport.fields);
   if(process.env.REQUIRE_PRESENCE_CHOICES==='1') assert(eportFields.signature.regions.length>1,'fixture must produce several suspect signature regions');
@@ -99,6 +111,11 @@ try {
   assert.equal(await page.locator('#evidence .proof').count(),2);
   await page.screenshot({path:'test-results/03-compare.png',fullPage:true});
   // The export is the displayed snapshot, even if the session changes afterwards.
+  await page.locator('[data-check="gpkd_seal"]').click();
+  assert((await page.locator('#check-detail').textContent()).includes('GPKD'));
+  const registrationProof=page.locator('#evidence [data-open-source]');
+  assert.equal(await registrationProof.getAttribute('data-open-source'),'gpkd');
+  assert((await page.locator('#evidence .proof svg image').getAttribute('href')).includes('/api/pages/gpkd/'));
   const shown=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd);
   const shownCompany=shown.fields.company_vi.value;
   const mutated=await page.evaluate(async d=>(await fetch('/api/fields/gpkd/company_vi',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:'SNAPSHOT MUTATION',regions:[{page:1,box:[.1,.1,.2,.2]}],revision:d.revision,document_id:d.id,reason:'after display'})})).status,shown);

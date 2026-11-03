@@ -61,14 +61,14 @@ def compare(documents):
     else:
         add('seal_identity','Tên trên dấu (MST chưa đọc rõ)',field(e,'company_vi'),field(e,'seal_company'),'company')
         rows[-1]['reason']='MST trên dấu chưa đọc rõ. '+rows[-1]['reason']
-    for key,label in (('signature','Hiện diện chữ ký'),('seal','Hiện diện con dấu')):
-        b=field(e,key); status='REVIEW'; reason='Chưa xác định chắc hiện diện; cần kiểm tra vùng ký trên EPORT.'
+    for key,label,kind,fs,field_key in (('signature','Hiện diện chữ ký EPORT','eport',e,'signature'),('seal','Hiện diện mộc EPORT','eport',e,'seal'),('gpkd_seal','Hiện diện mộc cơ quan cấp trên GPKD','gpkd',g,'seal')):
+        b=field(fs,field_key); status='REVIEW'; reason='Chưa xác định chắc hiện diện; cần kiểm tra vùng nguồn trên '+kind.upper()+'.'
         if readable(b):
             if compact(b['value']) in ('CO','PRESENT'):
                 status='PASS'; reason='Ghi nhận hiện diện; không xác thực thật–giả hoặc giá trị pháp lý.'
             elif compact(b['value']) in ('KHONG','ABSENT','KHONG CO') and b['status']=='manual':
                 status='FAIL'; reason='Người kiểm tra xác nhận không có tại vùng đã chọn.'
-        rows.append({'id':key,'label':label,'status':status,'reason':reason,'left':{'value':'Không đối chiếu với dấu cơ quan cấp GPKD','regions':[]},'right':b})
+        rows.append({'id':key,'label':label,'status':status,'reason':reason,'left':{'value':'Yêu cầu hiện diện trên '+kind.upper(),'regions':[]},'right':b,'left_kind':kind,'right_kind':kind,'type':'presence'})
     conclusion='FAIL' if any(r['status']=='FAIL' for r in rows) else 'REVIEW' if any(r['status']=='REVIEW' for r in rows) else 'PASS'
     return {'conclusion':conclusion,'label':LABELS[conclusion],'rows':rows,
             'counts':{s:sum(r['status']==s for r in rows) for s in LABELS},

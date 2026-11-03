@@ -27,7 +27,7 @@ LABELS = {
     'signature': 'Chữ ký', 'seal': 'Con dấu', 'seal_tax_id': 'MST đọc được trên dấu',
     'seal_company': 'Tên doanh nghiệp đọc trên dấu', 'seal_text': 'Nội dung đọc được trên dấu',
 }
-GPKD_KEYS = ('company_vi','company_en','tax_id','owner','legal_rep')
+GPKD_KEYS = ('company_vi','company_en','tax_id','owner','legal_rep','seal')
 EPORT_KEYS = ('company_vi','tax_id','registration_id','authorized_rep','signer','signature','seal','seal_tax_id','seal_company','seal_text')
 
 
@@ -257,6 +257,7 @@ def add_field(fields,key,c):
 
 def extract_fields(rows,kind):
     fields={k:empty_field(k) for k in (GPKD_KEYS if kind=='gpkd' else EPORT_KEYS)}
+    if kind=='gpkd':fields['seal']['label']='Mộc cơ quan cấp trên GPKD'
     context=None
     for i,row in enumerate(rows):
         n,indices=fold_map(row['text']); canon=compact(row['text'])
@@ -342,6 +343,26 @@ def signature_ink_regions(rgb, rows):
     return result[:8]
 
 
+def store_seal_presence(fields,seals):
+    if not seals:return
+    score=max(s for s,_ in seals)
+    add_field(fields,'seal',{'value':'Có' if score>=.68 else 'Nghi có',
+              'regions':[r for _,r in seals],'status':'read' if score>=.68 else 'uncertain'})
+
+
+def inspect_registration_seal(doc,pages,images,fields):
+    """Presence of the issuing seal only, never company/MST matching on this seal."""
+    seals=[]
+    for p in pages:
+        number=p['number'];rgb=images.get(number)
+        if rgb is None:rgb=render_page(doc[number-1])
+        h,w=rgb.shape[:2]
+        for score,_,box in detect_stamps(rgb,with_boxes=True):
+            if score>=.45:
+                seals.append((score,region(number,[box[0]/w,box[1]/h,box[2]/w,box[3]/h])))
+    store_seal_presence(fields,seals)
+
+
 def inspect_marks(doc,pages,rows,images,fields,lang):
     seals=[]; signer_candidates=[]
     for p in pages:
@@ -378,9 +399,7 @@ def inspect_marks(doc,pages,rows,images,fields,lang):
     for c in signer_candidates: add_field(fields,'signer',c)
     # Presence of handwritten strokes cannot safely be proved by printed names.
     # Leave signature missing until human review rather than inventing a verdict.
-    if seals:
-        best=max(seals,key=lambda item:item[0]); score=best[0]
-        add_field(fields,'seal',{'value':'Có' if score>=.68 else 'Nghi có','regions':[r for _,r,_ in seals],'status':'read' if score>=.68 else 'uncertain'})
+    store_seal_presence(fields,[(score,r) for score,r,_ in seals])
     for score,r,e in seals:
         if e.variants:
             text=' | '.join(dict.fromkeys(t for t in e.variants if t.strip()))
@@ -405,8 +424,9 @@ def extract(path: Path,kind: str,lang='vie+eng',marks=True):
             field_done=time.monotonic()
             recheck=refine_fields(fields,images,lang,exact_text) if detected==kind else {'attempted':0,'confirmed':0}
             recheck_done=time.monotonic()
-            if kind=='eport' and detected=='eport' and marks:
-                inspect_marks(doc,pages,rows,images,fields,lang)
+            if detected==kind and marks:
+                if kind=='eport':inspect_marks(doc,pages,rows,images,fields,lang)
+                else:inspect_registration_seal(doc,pages,images,fields)
             end=time.monotonic()
             return {'detected_kind':detected,'pages':pages,'fields':fields,'ocr_recheck':recheck,
                     'timings':{'read':round(read_done-started,3),'fields':round(field_done-read_done,3), 'recheck':round(recheck_done-field_done,3),'marks':round(end-recheck_done,3),'total':round(end-started,3)},
