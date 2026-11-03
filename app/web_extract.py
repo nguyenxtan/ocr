@@ -15,7 +15,8 @@ import cv2
 import numpy as np
 from app.web_refine import refine_fields
 from app.fields import normalize
-from app.analysis import render_page, detect_stamps, tax_code_valid, red_mask
+from app.analysis import render_page, tax_code_valid, red_mask
+from app.web_stamps import detect_stamps
 from app.seal_ocr import read_seal
 from app.signatories import ocr_lines, signature_anchors, candidate_from_line, OCRLine, OCRWord
 
@@ -405,7 +406,7 @@ def inspect_marks(doc,pages,rows,images,fields,lang):
             text=' | '.join(dict.fromkeys(t for t in e.variants if t.strip()))
             add_field(fields,'seal_text',{'value':text,'regions':[r],'status':'uncertain'})
         for code in e.high_confidence_msts:
-            add_field(fields,'seal_tax_id',{'value':code,'regions':[r],'status':'read'})
+            add_field(fields,'seal_tax_id',{'value':code,'regions':[r],'status':'read' if score>=.68 else 'uncertain'})
         # Keep independent OCR words, not the expected company string.
         if len(e.strong_central_tokens)>=2:
             add_field(fields,'seal_company',{'value':' '.join(sorted(e.strong_central_tokens)), 'regions':[r], 'status':'uncertain'})

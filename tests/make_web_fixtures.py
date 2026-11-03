@@ -27,6 +27,17 @@ def make(directory):
                         p.draw_bezier((x0,140),(x0+20,100),(x0+40,180),(x0+70,130),color=(0,0,.6),width=1.6)
                         p.draw_bezier((x0+5,155),(x0+25,125),(x0+45,170),(x0+65,148),color=(0,0,.6),width=1.6)
             doc.save(directory/(kind+'.pdf'))
+            if kind in ('gpkd','eport'):
+                # Separate photocopy fixture, no pre-existing colored seal.
+                p=doc[-1]
+                if kind=='gpkd':
+                    p.add_redact_annot(fitz.Rect(380,580,520,720),fill=(1,1,1))
+                    p.apply_redactions(graphics=2)
+                for radius in (50,39):
+                    p.draw_circle((450,650),radius,color=(.35,.35,.35),width=1.8)
+                p.insert_text((424,647),'DON VI',fontsize=10,color=(.35,.35,.35))
+                p.insert_text((416,663),'THU NGHIEM',fontsize=8,color=(.35,.35,.35))
+                doc.save(directory/(kind+'-photocopy.pdf'))
 
 
 if __name__=='__main__':make(sys.argv[1])

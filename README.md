@@ -40,6 +40,12 @@ Tên được so toàn bộ, giữ dấu tiếng Việt, loại hình doanh nghi
 
 Không có tỷ lệ “tin cậy” minh họa. Các con số phần trăm trên trình xem chỉ là mức zoom. Kết luận Đạt/Cần kiểm tra/Không đạt không xác thực thật–giả hay thẩm quyền pháp lý.
 
+Web dò cả dấu đỏ và **vùng nghi con dấu đen/xám trên bản photocopy**, dựa trên
+vòng tròn/ellipse và nét bên trong, trên mọi trang. Ứng viên đơn sắc luôn là
+`Nghi có`, cần kiểm tra/chọn vùng và xác nhận; nội dung OCR trong vùng này cũng
+chưa được tự xác nhận. Logo có cấu trúc tương tự vẫn có thể bị nhầm; dấu vuông,
+vỡ nhiều hoặc quá mờ có thể cần vẽ vùng thủ công. Xem [kiểm thử photocopy](docs/photocopy-seals.md).
+
 ### Xử lý và lưu tạm
 
 - Ưu tiên lớp chữ khi đủ chất lượng; ký tự điều khiển, lỗi mã hóa, ít chữ hoặc lớp chữ có dấu hiệu ẩn/không hiển thị sẽ chuyển sang OCR ảnh trang. Giữ thông tin xoay PDF khi tạo ảnh/vùng nguồn. Hệ tọa độ chuẩn là trang hiển thị sau xoay gốc PDF, chuẩn hóa `[x0,y0,x1,y1]` trong `[0,1]`; SVG áp dụng chung phép xoay/zoom cho ảnh và khung, thao tác kéo dùng ma trận nghịch đảo.

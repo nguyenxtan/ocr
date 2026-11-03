@@ -56,6 +56,14 @@ try {
   // GPKD has a separate seal and a source on its own page, never on EPORT.
   const gpkdSeal=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents.gpkd.fields.seal);
   assert(gpkdSeal.regions.length>0,'real/synthetic GPKD seal should have a detected source');
+  if(process.env.REQUIRE_PHOTOCOPY_SEALS==='1') {
+    const docs=await page.evaluate(async()=> (await (await fetch('/api/session')).json()).documents);
+    for(const kind of ['gpkd','eport']) {
+      assert.equal(docs[kind].fields.seal.status,'uncertain');
+      assert.equal(docs[kind].fields.seal.value,'Nghi có');
+      assert(docs[kind].fields.seal.regions.some(r=>r.page===2));
+    }
+  }
   await page.locator('[data-field="seal"]').click();
   assert((await page.locator('#page-title').textContent()).startsWith('GPKD'));
   if(await page.locator('[data-candidate]').count())await page.locator('[data-candidate]').first().click();

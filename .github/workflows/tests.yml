@@ -55,3 +55,4 @@ jobs:
             sleep 1
           done
           npm run test:browser
+          GPKD_PDF=/tmp/ocr-ci-fixtures/gpkd-photocopy.pdf EPORT_PDF=/tmp/ocr-ci-fixtures/eport-photocopy.pdf REQUIRE_PHOTOCOPY_SEALS=1 npm run test:browser
