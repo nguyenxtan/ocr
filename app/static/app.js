@@ -3,6 +3,7 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const kindLabel={gpkd:'Giấy chứng nhận đăng ký doanh nghiệp (GPKD)',eport:'Đăng ký sử dụng EPORT'};
 const statusLabel={read:'Đã đọc',manual:'Đã chỉnh sửa',missing:'Thiếu dữ liệu',uncertain:'Cần kiểm tra',ambiguous:'Nhiều giá trị'};
 const resultLabel={PASS:'Khớp',REVIEW:'Cần kiểm tra',FAIL:'Không khớp'};
+const checkLabel=r=>r.type==='presence'&&r.status!=='REVIEW'?(r.status==='PASS'?'Có':'Không có'):resultLabel[r.status];
 let session={documents:{}}, step=1, kind='gpkd', pageNumber=1, selected=null, zoom=1, rotation=0, report=null, activeCheck=null;
 let draftRegions=null, draftSource=null, drawing=false, pointStart=null, pollTimer=null, inflight=new Set(), sequence=0;
 const doc=()=>session.documents[kind];
@@ -121,13 +122,13 @@ function renderReport(){
  $('#compare-strip').innerHTML=strip();
  $('#verdict').className=`verdict ${report.conclusion}`;
  $('#verdict').innerHTML=`<span class="symbol">${report.conclusion==='PASS'?'✓':report.conclusion==='FAIL'?'×':'!'}</span><div><h2>Kết quả đối chiếu: ${report.label}</h2><p>${report.conclusion==='PASS'?'Các tiêu chí có đủ dữ liệu phù hợp.':'Xem từng tiêu chí và vùng nguồn trước khi sử dụng kết quả.'}</p></div><div class="counts"><div class="count"><strong>${report.rows.length}</strong>Tiêu chí</div>${['PASS','FAIL','REVIEW'].map(s=>`<div class="count"><strong>${report.counts[s]}</strong>${resultLabel[s]}</div>`).join('')}</div>`;
- $('#checks').innerHTML=report.rows.map(r=>`<tr data-check="${r.id}" tabindex="0" class="${activeCheck===r.id?'selected':''}"><td>${esc(r.label)}</td><td>${esc(r.left.value||'Chưa đọc được')}</td><td>${esc(r.right.value||'Chưa đọc được')}</td><td><span class="badge ${r.status}">${resultLabel[r.status]}</span></td></tr>`).join('');
+ $('#checks').innerHTML=report.rows.map(r=>`<tr data-check="${r.id}" tabindex="0" class="${activeCheck===r.id?'selected':''}"><td>${esc(r.label)}</td><td>${esc(r.left.value||'Chưa đọc được')}</td><td>${esc(r.right.value||'Chưa đọc được')}</td><td><span class="badge ${r.status}">${checkLabel(r)}</span></td></tr>`).join('');
  $$('[data-check]').forEach(el=>{el.onclick=()=>{activeCheck=el.dataset.check;renderReport();};el.onkeydown=e=>{if(e.key==='Enter'){activeCheck=el.dataset.check;renderReport();}};});
  const row=report.rows.find(r=>r.id===activeCheck)||report.rows[0];activeCheck=row.id;
- $('#check-detail').innerHTML=`<h3>${esc(row.label)} <span class="badge ${row.status}">${resultLabel[row.status]}</span></h3><p class="quiet">${esc(row.reason)}</p><div class="value-pair"><div><small>Giá trị thứ nhất</small>${esc(row.left.value||'Chưa đọc được')}</div><div><small>Giá trị thứ hai</small>${esc(row.right.value||'Chưa đọc được')}</div></div>`;
- const leftKind=['signer','seal_identity','signature','seal'].includes(row.id)?'eport':'gpkd';
- $('#evidence').innerHTML=[[leftKind,row.left],['eport',row.right]].map(([k,f])=>{
-  if(!f.regions?.length)return `<article class="proof"><h4>${k.toUpperCase()} · Chưa có vùng</h4><p>${['signature','seal'].includes(row.id)?'Không so chữ ký hoặc dấu với cơ quan cấp GPKD.':'Thiếu bằng chứng nguồn. Quay lại OCR để kiểm tra.'}</p></article>`;
+ $('#check-detail').innerHTML=`<h3>${esc(row.label)} <span class="badge ${row.status}">${checkLabel(row)}</span></h3><p class="quiet">${esc(row.reason)}</p><div class="value-pair"><div><small>Giá trị thứ nhất</small>${esc(row.left.value||'Chưa đọc được')}</div><div><small>Giá trị thứ hai</small>${esc(row.right.value||'Chưa đọc được')}</div></div>`;
+ const leftKind=row.left_kind||(['signer','seal_identity','signature','seal'].includes(row.id)?'eport':'gpkd');
+ $('#evidence').innerHTML=[[leftKind,row.left],[row.right_kind||'eport',row.right]].map(([k,f])=>{
+  if(!f.regions?.length)return `<article class="proof"><h4>${row.type==='presence'&&!f.key?'Yêu cầu kiểm tra':k.toUpperCase()+' · Chưa có vùng'}</h4><p>${row.type==='presence'&&!f.key?'Chỉ kiểm tra hiện diện trên từng tài liệu, không so hình mộc giữa GPKD và EPORT.':'Thiếu bằng chứng nguồn. Quay lại OCR để kiểm tra.'}</p></article>`;
   return `<article class="proof">${f.regions.map(r=>{const p=session.documents[k].pages[r.page-1],w=p.width,h=p.height;let [x0,y0,x1,y1]=r.box;const pad=.035;x0=Math.max(0,x0-pad);y0=Math.max(0,y0-pad);x1=Math.min(1,x1+pad);y1=Math.min(1,y1+pad);return `<h4>${k.toUpperCase()} · Trang ${r.page}</h4><svg viewBox="${x0*w} ${y0*h} ${(x1-x0)*w} ${(y1-y0)*h}"><image href="${pageUrl(k,session.documents[k],r.page)}" width="${w}" height="${h}"/><rect class="source" x="${r.box[0]*w}" y="${r.box[1]*h}" width="${(r.box[2]-r.box[0])*w}" height="${(r.box[3]-r.box[1])*h}"/></svg>`;}).join('')}<button data-open-source="${k}" data-field-source="${esc(f.key||'')}" data-page-source="${f.regions[0].page}">Mở trang nguồn ↗</button></article>`;
  }).join('');
  $$('[data-open-source]').forEach(el=>el.onclick=()=>{kind=el.dataset.openSource;pageNumber=+el.dataset.pageSource;selected=el.dataset.fieldSource;rotation=0;draftRegions=null;draftSource=null;goto(2);});

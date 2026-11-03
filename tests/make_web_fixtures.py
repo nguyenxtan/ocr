@@ -18,6 +18,9 @@ def make(directory):
         with fitz.open() as doc:
             for number,text in enumerate(pages,1):
                 p=doc.new_page();p.insert_text((45,65),text,fontsize=11)
+                if kind=='gpkd' and number==2:
+                    for radius in (50,42):
+                        p.draw_circle((450,650),radius,color=(.8,0,0),width=2.5)
                 if kind=='eport' and number==2:
                     # Two separate synthetic pen strokes: several suspect signature locations.
                     for x0 in (55,165):
