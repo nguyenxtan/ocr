@@ -60,7 +60,7 @@ function renderOCR(){
  $('#field-count').textContent=`${count}/${Object.keys(d.fields).length} đã đọc`;
  $('#fields').innerHTML=Object.values(d.fields).map(f=>`<button class="field ${selected===f.key?'selected':''}" data-field="${f.key}"><span class="field-label">${esc(f.label)}</span><span class="field-value">${esc(f.status==='ambiguous'?f.candidates.map(c=>c.value).join(' / '):f.value||'Chưa đọc được')}<small>${statusLabel[f.status]}${f.regions.length?' · Trang '+[...new Set(f.regions.map(r=>r.page))].join(', '):''}</small></span></button>`).join('');
  $$('.field').forEach(el=>el.onclick=()=>selectField(el.dataset.field));
- $('#timings').textContent=`${kind.toUpperCase()} · Đọc ${d.timings.read}s · Trích trường ${d.timings.fields}s · Kiểm tra dấu ${d.timings.marks}s · Chờ ${d.timings.queue}s · Nguồn: ${d.pages.map(p=>`trang ${p.number} ${p.method==='text'?'lớp chữ':'OCR'}`).join(', ')}`;
+ $('#timings').textContent=`${kind.toUpperCase()} · Đọc ${d.timings.read}s · Trích trường ${d.timings.fields}s · Đọc lại vùng ${d.timings.recheck??0}s · Kiểm tra dấu ${d.timings.marks}s · Chờ ${d.timings.queue}s · Nguồn: ${d.pages.map(p=>`trang ${p.number} ${p.method==='text'?'lớp chữ':'OCR'}`).join(', ')}`;
  renderPage();renderEditor();
 }
 function selectField(key,fromRegion=false){selected=key;drawing=false;draftRegions=null;draftSource=null;const f=doc().fields[key];if(!fromRegion&&f.regions.length)pageNumber=f.regions[0].page;renderOCR();if(f.regions.length)$('rect.source.selected')?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});}

@@ -65,7 +65,7 @@ GPKD_PDF=/duong/dan/gpkd.pdf EPORT_PDF=/duong/dan/eport.pdf npm run test:browser
 python -m benchmarks.web_compare /duong/dan/gpkd.pdf /duong/dan/eport.pdf
 ```
 
-Xem [kết quả nghiệm thu và giới hạn](docs/web-validation.md). Hai PDF người dùng cung cấp và ảnh chụp trình duyệt nằm ngoài Git. `test-results/` bị bỏ qua vì có thể chứa nội dung hồ sơ.
+Xem [kết quả nghiệm thu và giới hạn](docs/web-validation.md) và [kết quả cải tiến OCR trước–sau](docs/ocr-improvements.md). Hai PDF người dùng cung cấp và ảnh chụp trình duyệt nằm ngoài Git. `test-results/` bị bỏ qua vì có thể chứa nội dung hồ sơ.
 
 ---
 
